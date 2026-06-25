@@ -16,7 +16,7 @@ from .audit import AuditLog
 from .config import Config, DEFAULT_PORTS
 from .external import detect
 from .http import Client
-from .utils import Scope, log, dedup_keep_order, is_catch_all_artifact
+from .utils import Scope, log, dedup_keep_order, is_catch_all_artifact, is_logout_url
 from .oob import OOBClient
 from .recon import dns_records, subdomains, ports as portscan, probe as prober, \
     fingerprint as fp, endpoints as endp, jsintel, wayback, takeover, favicon, \
@@ -630,7 +630,8 @@ def _merge_crawl(endpoints: List[dict], urls: List[str],
                     pvar[f"{pr.netloc}{pr.path}"] = pvar.get(f"{pr.netloc}{pr.path}", 0) + 1
     default_ep = endpoints[0]
     for u in urls:
-        if u in existing or not scope.url_in_scope(u) or is_catch_all_artifact(u):
+        if (u in existing or not scope.url_in_scope(u)
+                or is_catch_all_artifact(u) or is_logout_url(u)):
             continue
         # cap query-variants per path (cache-buster / soft-404 explosion guard)
         if "?" in u:

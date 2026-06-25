@@ -19,14 +19,19 @@ Venator **confirms** vulnerabilities by demonstrating impact, then **chains** th
 - **Blind SQLi** — time-based (MySQL/Postgres/MSSQL/Oracle/SQLite, delay must scale) and OOB-based (`xp_dirtree`, `UTL_HTTP`, `LOAD_FILE`).
 - **JWT forge + replay** — confirms signature-not-verified, RS256→HS256 algorithm confusion, alg:none, embedded-`jwk` self-sign (CVE-2018-0114), `kid` path-traversal, jku/x5u header injection. Negative-control separates true findings.
 - **API authorization + SSRF** — BOLA/IDOR (confirms when other users' PII returns per id), JSON-body SSRF (learns body from validation errors, confirms in-band or via OOB).
+- **Race / TOCTOU** — fires a synchronized concurrent burst (thread-barrier so the requests actually land together) at state-change endpoints; confirms only when multiple requests win past a guard that the app's own conflict response proves should allow one (negative-controlled against static page text).
+- **Prototype pollution** — injects `__proto__` (JSON body + query string) and confirms via a *clean* follow-up request that leaks the injected junk property — process-wide `Object.prototype` pollution, not mere reflection (near-zero FP).
+- **HTTP Parameter Pollution** — duplicate-param last/first-value differential (WAF-bypass signal) plus duplicate-only SQL-error / 5xx detection. Only fires when the two single-value baselines genuinely differ.
+- **Header injection** — XSS / SQLi / SSTI through request headers (User-Agent, Referer, X-Forwarded-For…), reflection-gated so template/script payloads only hit headers the app actually echoes.
+- **Log4Shell (CVE-2021-44228)** — JNDI injection into 13 commonly-logged headers + URL params with WAF-evasion variants; OOB-only confirmation (zero in-band false positives).
 - **OOB (blind bug confirmation)** — spins up an interactsh collaborator (ngrok fallback), confirms blind SSRF, blind RCE, blind XXE, blind/stored XSS.
-- **Authenticated scanning** — `--cookie`, `--auth-bearer`, `--header` make every phase run as a logged-in user.
+- **Authenticated scanning** — `--cookie`, `--auth-bearer`, `--header` make every phase run as a logged-in user. Logout / sign-out links are auto-excluded from the crawler, browser, and attack surface so the session can't be dropped mid-scan.
 - **Surface expansion** — recursive in-scope crawler (BFS + katana), hidden-parameter discovery, OpenAPI/Swagger ingestion, JS source-map recovery, DOM-XSS source→sink leads.
 - **Headless browser** — Playwright renders SPAs, captures XHR/fetch endpoints, and confirms DOM-XSS execution (payload must actually fire — zero FP). Auto-skips if Playwright isn't installed.
 - **Exposure extraction** — `.git/` (validates ref shape, extracts remote URL), `.env` (reports key names, never values), Spring Boot actuator endpoints, `.svn`, Apache `/server-status`.
 - **OAuth / OIDC depth** — OIDC discovery, implicit grant detection, redirect_uri validation weaknesses (error-differential oracle, pre-auth), missing `state` (CSRF).
 - **Many bypasses** — 403/401 engine: 51 path mutations × 29 header spoofs × 9 verbs + method-override. Every injection class carries a WAF-evasion payload set (21 SQL, 17 XSS, 32 cmd, multi-engine SSTI).
-- **Chaining engine** — SQLi bypass→ATO, XSS→session theft→ATO, SSRF→cloud metadata→IAM creds, open-redirect→OAuth token theft, LFI→secret→escalation, JWT-forge→admin, mass-assign→admin, cache+XSS→mass-ATO, and more. Chains score highest in the report.
+- **Chaining engine** — SQLi bypass→ATO, XSS→session theft→ATO, SSRF→cloud metadata→IAM creds, open-redirect→OAuth token theft, LFI→secret→escalation, JWT-forge→admin, mass-assign→admin, cache+XSS→mass-ATO, prototype-pollution→RCE, race→business-logic abuse, Log4Shell→full compromise, HPP→WAF bypass, CORS+XSS→exfil, and more. Chains score highest in the report.
 
 </details>
 
@@ -65,7 +70,7 @@ Enforced in code, not by convention:
 - **Scope guard** — only the target apex, its subdomains, and `--extra-scope` hosts are ever contacted. Out-of-scope URLs raise `ScopeError`, are logged as `BLOCKED_OUT_OF_SCOPE`, and dropped.
 - **Global rate limiter** — one thread-safe limiter spaces all outbound requests by `--delay` (or `1/--rate-limit`). More threads ≠ more req/sec.
 - **Audit log** — every request (method, URL, timestamp, phase, status, tool) appended to `output/<target>/audit.jsonl`.
-- **Non-destructive only** — GET/HEAD; benign canary tokens for reflection signals; read-only GraphQL introspection; no fuzzing, no credential brute, no DoS-style volume.
+- **Proof-over-damage** — confirms with minimal benign indicators, not destruction: benign canary tokens for reflection, read-only GraphQL introspection and file/secret reads, junk (non-security) property names for prototype pollution. POST is used only where a bug class requires it (auth bypass, mass-assignment, prototype pollution, race) and the race probe sends one small bounded concurrent burst — no fuzzing, no credential brute, no DoS-style volume.
 - **Degraded-run detection** — if every live host fails HTTP probing, the report is flagged `DEGRADED RUN` instead of silently appearing "clean".
 
 </details>

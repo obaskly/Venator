@@ -29,7 +29,7 @@ from typing import Dict, List, Tuple
 from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
 
 from .config import Config
-from .utils import Scope, dedup_keep_order, log
+from .utils import Scope, dedup_keep_order, is_logout_url, log
 from .vuln import Finding
 
 # sinks worth firing: classic HTML-injection + hash/innerHTML DOM sinks.
@@ -139,8 +139,8 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
             page = ctx.new_page()
 
             def _goto(url: str) -> bool:
-                if not scope.url_in_scope(url):
-                    return False
+                if not scope.url_in_scope(url) or is_logout_url(url):
+                    return False  # never navigate to logout — would drop an authed session
                 if audit:
                     audit.record("GET", url, phase="browser")
                 try:
@@ -161,7 +161,8 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
                 try:
                     links = page.eval_on_selector_all(
                         "a[href]", "els => els.map(e => e.href)") or []
-                    post_links += [u for u in links if scope.url_in_scope(u)]
+                    post_links += [u for u in links
+                                   if scope.url_in_scope(u) and not is_logout_url(u)]
                     forms = page.eval_on_selector_all(
                         "form",
                         "els => els.map(f => ({action: f.action, method: (f.method||'get'),"

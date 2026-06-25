@@ -165,6 +165,24 @@ def is_catch_all_artifact(url: str) -> bool:
     return False
 
 
+_LOGOUT_RE = re.compile(
+    r"(?:^|[/_\-.=])(logout|log-out|signout|sign-out|logoff|log-off|"
+    r"signoff|deauth|deauthenticate|/exit|session/destroy|account/logout)"
+    r"(?:$|[/_\-.?&])", re.I)
+
+
+def is_logout_url(url: str) -> bool:
+    """True for logout / sign-out / session-destroy URLs. Following one during an
+    AUTHENTICATED scan destroys the session and silently cripples every later
+    authed check (IDOR/BOLA/dashboard), so the crawler, headless browser, and
+    surface builders skip these entirely — they are never a useful attack target."""
+    try:
+        pr = urlparse(url)
+    except Exception:
+        return False
+    return bool(_LOGOUT_RE.search(pr.path + (("?" + pr.query) if pr.query else "")))
+
+
 def title_from_html(html: str) -> str:
     m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
     if not m:

@@ -1,21 +1,24 @@
 """HTTP Parameter Pollution (HPP) detection.
 
-Sends duplicate parameter names in the query string (e.g. `?id=1&id=2`) and
-checks whether the application exhibits any of:
-  * a different response body than the single-param baseline (server used a
-    different value — first, last, concatenated, or array),
-  * a 500 / exception (server passed an array where it expected a scalar),
-  * a DB error string (backend attempted to use both values in a SQL query).
+Sends a parameter twice with two *distinct* values (`?id=A&id=B`) and decides
+which value the backend actually used, by comparing the duplicate response
+against the two single-value baselines:
 
-HPP is useful as:
-  - a WAF bypass (the WAF may only inspect the first value while the backend
-    uses the last),
-  - an authorization bypass (inject a second `role=admin` alongside `role=user`),
-  - an injection amplifier.
+  * DB error string present only in the duplicate response  → HPP feeds both
+    values into a SQL query (injection amplifier),
+  * 5xx only in the duplicate response                      → array passed where
+    a scalar was expected,
+  * duplicate response == the SECOND value's response       → backend uses the
+    LAST value (the classic WAF bypass: a WAF that inspects the first value is
+    blind to the payload in the second),
+  * duplicate response == the FIRST value's response        → backend uses the
+    FIRST value.
 
-Conservative: only flags when the duplicate-param response is meaningfully
-different from the baseline single-param response (body-length diff > 5% or a
-DB error appears). Does NOT send any payload that would modify state.
+False-positive control: a finding is only emitted when the two single-value
+baselines are themselves materially different (so "which value won" is
+observable) and the duplicate response closely matches exactly one of them.
+Pure length-jitter and "appended an unknown param changed the page" heuristics
+are NOT used — they fire on every dynamic page. Detection only; no state change.
 """
 from __future__ import annotations
 
@@ -31,34 +34,24 @@ from ..vuln import Finding
 
 _MAX_URLS = 12
 _MAX_PARAMS_PER_URL = 3
-
-# Extra high-value pairs to inject for authorization bypass signals
-_PRIV_DUPES = [
-    ("role", "admin"),
-    ("isAdmin", "true"),
-    ("admin", "1"),
-    ("is_admin", "1"),
-]
+_MIN_BASELINE_DELTA = 24   # the two single-value bodies must differ by > this
+_MATCH_TOL = 8             # duplicate body within this many bytes == "matches"
 
 _DB_ERR = re.compile("|".join(re.escape(s) for s in SQL_ERROR_SIGNS), re.I)
 
 
-def _dup_url(url: str, param: str, val1: str, val2: str) -> str:
-    """Build a URL with the parameter appearing twice (different values)."""
+def _set_single(url: str, param: str, val: str) -> str:
     pr = urlparse(url)
-    # Keep all existing params, but replace the target param with two copies
-    pairs = [(k, v) for k, v in parse_qsl(pr.query, keep_blank_values=True)
-             if k != param]
-    pairs += [(param, val1), (param, val2)]
+    pairs = [(k, (val if k == param else v))
+             for k, v in parse_qsl(pr.query, keep_blank_values=True)]
     return urlunparse(pr._replace(query=urlencode(pairs)))
 
 
-def _inject_priv(url: str, param: str, field: str, val: str) -> str:
-    """Append an extra privileged param duplicate to the URL."""
+def _dup_url(url: str, param: str, val1: str, val2: str) -> str:
     pr = urlparse(url)
-    pairs = list(parse_qsl(pr.query, keep_blank_values=True))
-    # keep original params, append the extra field
-    pairs.append((field, val))
+    pairs = [(k, v) for k, v in parse_qsl(pr.query, keep_blank_values=True)
+             if k != param]
+    pairs += [(param, val1), (param, val2)]
     return urlunparse(pr._replace(query=urlencode(pairs)))
 
 
@@ -68,122 +61,90 @@ def exploit(client: Client, surface: dict, cfg: Config) -> List[Finding]:
     urls = dedup_keep_order(surface.get("urls", []))[:_MAX_URLS]
 
     for url in urls:
+        if client.over_budget():
+            break
         params = [(k, v) for k, v in parse_qsl(urlparse(url).query, keep_blank_values=True)]
         if not params:
             continue
 
-        # ---------- 1) duplicate value injection on existing params ----------
         for param, orig_val in params[:_MAX_PARAMS_PER_URL]:
-            key = (urlparse(url).path, param, "dup")
+            key = (urlparse(url).path, param)
             if key in seen:
                 continue
             seen.add(key)
 
-            # baseline: single param
-            base = client.get(url, phase="exploit")
-            if not base.ok:
+            a_val = orig_val or "1"
+            b_val = (str(int(a_val) + 1) if a_val.isdigit() else a_val + "zz")
+
+            a = client.get(_set_single(url, param, a_val), phase="exploit")
+            b = client.get(_set_single(url, param, b_val), phase="exploit")
+            if not (a and a.ok and b and b.ok):
                 continue
+            la, lb = len(a.text or ""), len(b.text or "")
+            a_low, b_low = (a.text or "").lower(), (b.text or "").lower()
 
-            # duplicate: param=<orig>&param=<orig>2
-            alt_val = orig_val + "2" if orig_val.isdigit() else orig_val + "_dup"
-            dup_url = _dup_url(url, param, orig_val, alt_val)
-            r = client.get(dup_url, phase="exploit")
-            if not r.ok:
+            dup = client.get(_dup_url(url, param, a_val, b_val), phase="exploit")
+            if not dup:
                 continue
+            dup_txt = dup.text or ""
+            ld = len(dup_txt)
 
-            base_len = len(base.text or "")
-            dup_len = len(r.text or "")
-            diff_pct = abs(dup_len - base_len) / max(base_len, 1)
-
-            db_err = _DB_ERR.search(r.text or "")
-            server_err = r.status in (500, 502, 503)
-
-            if db_err:
-                sign = db_err.group(0)
+            # 1) duplicate-only DB error → injection amplifier
+            m = _DB_ERR.search(dup_txt)
+            if m and m.group(0).lower() not in a_low and m.group(0).lower() not in b_low:
                 findings.append(Finding(
                     title=f"HTTP Parameter Pollution → SQL error in '{param}'",
-                    severity="high", category="sqli", target=dup_url,
+                    severity="high", category="sqli", target=dup.url,
                     evidence=(
-                        f"Duplicate '{param}' ({orig_val!r} + {alt_val!r}) triggered "
-                        f"DB error '{sign}' (absent from baseline). "
-                        "HPP fed both values to a SQL query. EXPLOITED."
+                        f"Duplicate '{param}' ({a_val!r}+{b_val!r}) triggered DB error "
+                        f"'{m.group(0)}' absent from both single-value baselines — both "
+                        "values reached the SQL layer. EXPLOITED (HPP injection amplifier)."
                     ),
-                    recommendation=(
-                        "Parameterize queries. Accept only the first (or last) value for "
-                        "each parameter; reject duplicates or use strict schema validation."
-                    ),
-                    confidence="firm",
-                    poc=f"curl -s '{dup_url}'",
-                ))
+                    recommendation=("Parameterize queries; accept a single value per "
+                                    "parameter or validate against a strict schema."),
+                    confidence="firm", poc=f"curl -s '{dup.url}'"))
                 log("vuln", f"[high] HPP SQLi @ {url} param={param}")
+                continue
 
-            elif server_err:
+            # 2) duplicate-only 5xx → array-vs-scalar
+            if dup.status in (500, 502, 503) and a.status < 500 and b.status < 500:
                 findings.append(Finding(
                     title=f"HTTP Parameter Pollution → server error in '{param}'",
-                    severity="medium", category="exploit", target=dup_url,
-                    evidence=(
-                        f"Duplicate '{param}' caused HTTP {r.status} (baseline {base.status}). "
-                        "Server likely passed an array to a scalar-expecting function."
-                    ),
-                    recommendation=(
-                        "Sanitize duplicate parameters. Type-check input before use."
-                    ),
-                    confidence="firm",
-                    poc=f"curl -s '{dup_url}'",
-                ))
-                log("vuln", f"[medium] HPP 500 @ {url} param={param}")
+                    severity="medium", category="exploit", target=dup.url,
+                    evidence=(f"Duplicate '{param}' caused HTTP {dup.status} (single-value "
+                              f"baselines {a.status}/{b.status}). Array passed to scalar logic."),
+                    recommendation="Reject duplicate parameters; type-check input before use.",
+                    confidence="firm", poc=f"curl -s '{dup.url}'"))
+                log("vuln", f"[medium] HPP 5xx @ {url} param={param}")
+                continue
 
-            elif diff_pct > 0.1 and dup_len > 50:
+            # 3) which value won — only decidable when baselines actually differ
+            if abs(la - lb) <= _MIN_BASELINE_DELTA:
+                continue
+            dist_a, dist_b = abs(ld - la), abs(ld - lb)
+            if dist_b <= _MATCH_TOL and dist_a > _MIN_BASELINE_DELTA:
                 findings.append(Finding(
-                    title=f"HTTP Parameter Pollution — '{param}' behaves differently with duplicate",
-                    severity="low", category="exploit", target=dup_url,
+                    title=f"HTTP Parameter Pollution — backend uses LAST value of '{param}'",
+                    severity="low", category="exploit", target=dup.url,
                     evidence=(
-                        f"Duplicate '{param}' changed response length by {diff_pct*100:.0f}% "
-                        f"({base_len} → {dup_len}). Backend may use last/first/all values."
-                    ),
-                    recommendation=(
-                        "Explicitly reject or normalize duplicate parameters. "
-                        "Test as a WAF bypass vector with injection payloads."
-                    ),
-                    confidence="tentative",
-                    poc=f"curl -s '{dup_url}'",
-                ))
-                log("vuln", f"[low] HPP diff @ {url} param={param}")
-
-        # ---------- 2) privilege-field HPP (append role=admin etc.) ----------
-        if params:  # URL has at least one existing param
-            for field, priv_val in _PRIV_DUPES[:2]:
-                key = (urlparse(url).path, field, "priv")
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                base = client.get(url, phase="exploit")
-                if not base.ok:
-                    continue
-                priv_url = _inject_priv(url, params[0][0], field, priv_val)
-                r = client.get(priv_url, phase="exploit")
-                if not r.ok:
-                    continue
-                base_len = len(base.text or "")
-                priv_len = len(r.text or "")
-                diff_pct = abs(priv_len - base_len) / max(base_len, 1)
-                if diff_pct > 0.08 and priv_len > 50:
-                    findings.append(Finding(
-                        title=f"HTTP Parameter Pollution — injected '{field}={priv_val}' changed response",
-                        severity="medium", category="exploit", target=priv_url,
-                        evidence=(
-                            f"Appending '{field}={priv_val}' to the request changed response "
-                            f"length by {diff_pct*100:.0f}% — server may have merged the privilege field. "
-                            "Manual confirmation required."
-                        ),
-                        recommendation=(
-                            "Reject unexpected parameters. Whitelist accepted field names."
-                        ),
-                        confidence="tentative",
-                        poc=f"curl -s '{priv_url}'",
-                    ))
-                    log("vuln", f"[medium] HPP priv-field injection @ {url}")
-                    break  # one finding per URL is enough
+                        f"With '{param}={a_val}&{param}={b_val}' the response matched the "
+                        f"second value's output, not the first. A WAF inspecting only the "
+                        f"first occurrence is blind to a payload in the second. "
+                        "(HPP last-value WAF bypass — impact depends on a front filter)."),
+                    recommendation=("Normalize duplicate parameters to a single value before "
+                                    "both the WAF and the application read them."),
+                    confidence="firm", poc=f"curl -s '{dup.url}'"))
+                log("vuln", f"[medium] HPP last-value-wins @ {url} param={param}")
+            elif dist_a <= _MATCH_TOL and dist_b > _MIN_BASELINE_DELTA:
+                findings.append(Finding(
+                    title=f"HTTP Parameter Pollution — backend uses FIRST value of '{param}'",
+                    severity="low", category="exploit", target=dup.url,
+                    evidence=(
+                        f"With '{param}={a_val}&{param}={b_val}' the response matched the "
+                        f"first value's output. Confirms parser precedence — test as a WAF "
+                        f"bypass where the WAF reads the last value."),
+                    recommendation="Reject or canonicalize duplicate parameters.",
+                    confidence="firm", poc=f"curl -s '{dup.url}'"))
+                log("vuln", f"[low] HPP first-value-wins @ {url} param={param}")
 
     return findings

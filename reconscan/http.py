@@ -245,6 +245,63 @@ class Client:
     def post_form(self, url: str, data: dict, phase: str = "exploit") -> Response:
         return self.submit_form(url, data, method="POST", phase=phase)
 
+    def burst(self, url: str, data: dict, n: int = 8, method: str = "POST",
+              phase: str = "exploit") -> list:
+        """Fire `n` IDENTICAL requests as simultaneously as possible — the
+        race-condition / TOCTOU probe. A thread Barrier releases every request
+        at the same instant.
+
+        The per-request rate limiter is intentionally bypassed for the burst
+        window (simultaneity is the whole point), but ONE limiter slot is
+        consumed up front so the burst still paces against the rest of the scan,
+        and the scope guard + budget + per-request audit all still apply.
+        Returns a list of Response objects (may be shorter than n on error)."""
+        import threading
+        import concurrent.futures as _cf
+        try:
+            self.scope.assert_url(url)
+        except ScopeError as e:
+            self.audit.record(method, url, phase=phase, note="BLOCKED_OUT_OF_SCOPE")
+            log("err", str(e), detail=True)
+            return []
+        if self.over_budget():
+            return []
+        n = max(2, min(int(n), 10))   # hard cap — never a flood
+        self.limiter.wait()           # one pacing slot for the whole burst
+        self._req_count += n
+        barrier = threading.Barrier(n, timeout=self.cfg.timeout)
+        form_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        def _fire(_i: int) -> Optional[Response]:
+            h = dict(form_headers)
+            if self.cfg.rotate_ua:
+                h["User-Agent"] = random.choice(USER_AGENTS)
+            status = None
+            try:
+                barrier.wait()        # all threads release together
+            except threading.BrokenBarrierError:
+                pass
+            try:
+                resp = self.session.request(
+                    method, url, data=data, timeout=self.cfg.timeout,
+                    allow_redirects=False, verify=self.cfg.verify_tls,
+                    headers=h, stream=True)
+                raw = resp.raw.read(300_000, decode_content=True)
+                text = raw.decode(resp.encoding or "utf-8", errors="replace")
+                status = resp.status_code
+                return Response(url, url, status,
+                                {k.lower(): v for k, v in resp.headers.items()},
+                                text, resp.elapsed.total_seconds(), [])
+            except requests.RequestException as e:
+                return Response(url, url, 0, {}, "", 0.0, [], error=type(e).__name__)
+            finally:
+                self.audit.record(method, url, phase=phase, status=status,
+                                  note="BURST")
+
+        with _cf.ThreadPoolExecutor(max_workers=n) as ex:
+            results = [r for r in ex.map(_fire, range(n)) if r is not None]
+        return results
+
     def post_raw(self, url: str, body: str, content_type: str,
                  phase: str = "exploit") -> Response:
         """POST a raw body with an explicit Content-Type (scope-gated, audited).

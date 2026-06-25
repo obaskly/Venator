@@ -28,7 +28,7 @@ from urllib.parse import urljoin, urldefrag, urlparse, parse_qsl
 
 from ..config import Config
 from ..http import Client
-from ..utils import Scope, dedup_keep_order, is_catch_all_artifact, log
+from ..utils import Scope, dedup_keep_order, is_catch_all_artifact, is_logout_url, log
 
 # href/src on a/link/area/iframe/frame/form... — one cheap pass over the body.
 _LINK = re.compile(r"""(?:href|src|action)\s*=\s*['"]?([^'"\s>]+)""", re.I)
@@ -147,6 +147,8 @@ def crawl(client: Client, scope: Scope, seeds: List[str], cfg: Config,
             return  # unresolved template literal / junk (common in katana JS parsing)
         if is_catch_all_artifact(u):
             return  # /.env/socket.io/ style soft-404 artifact on catch-all hosts
+        if is_logout_url(u):
+            return  # never put logout/sign-out in the surface (would drop an authed session)
         # cap recorded query-variants per path so a cache-buster (unique ?t=/&sid=
         # every request) can't balloon the surface into thousands of dead URLs.
         pk = _path_key(u)
@@ -164,7 +166,7 @@ def crawl(client: Client, scope: Scope, seeds: List[str], cfg: Config,
             return
         if any(tok in u for tok in ("${", "{{", "}}", "`", "<", ">")):
             return
-        if is_catch_all_artifact(u):
+        if is_catch_all_artifact(u) or is_logout_url(u):
             return
         pk = _path_key(u)
         if path_variants.get(pk, 0) >= _PER_PATH_CAP:

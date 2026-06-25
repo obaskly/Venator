@@ -100,13 +100,25 @@ def write_json(report: dict, output_dir: str) -> str:
 
 
 def root_name(apex: str) -> str:
-    """Registrable-ish root label: example.com -> example,
-    host:8080 -> host."""
-    host = (apex or "").split("://")[-1].split("/")[0].split(":")[0]
+    """Registrable-ish report folder: example.com -> example, example.com:8080 ->
+    example_8080. IP / single-label hosts keep the FULL host plus port so that
+    distinct host:port targets never collide (127.0.0.1:3000 vs 127.0.0.1:8888
+    used to both fold to '0' and overwrite each other's report)."""
+    import ipaddress
+    raw = (apex or "").split("://")[-1].split("/")[0]
+    host = raw.split(":")[0]
+    port = raw.split(":", 1)[1] if ":" in raw else ""
     labels = [l for l in host.split(".") if l]
-    if len(labels) >= 2:
-        return labels[-2]
-    return labels[0] if labels else (apex or "target")
+    is_ip = True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        is_ip = False
+    if is_ip or len(labels) < 2:
+        base = host.replace(".", "_") or (apex or "target")
+    else:
+        base = labels[-2]
+    return f"{base}_{port}" if port else base
 
 
 def write_summary(report: dict, path: str) -> str:
