@@ -235,11 +235,84 @@ def _rule_cache_storedxss(f, ctx):
     return None
 
 
+def _rule_cors_xss(f, ctx):
+    cors = _has(f, category="cors")
+    x = _has(f, category="exploit", title_contains="xss") or _has(f, category="xss")
+    if cors and x:
+        return _chain(
+            "CORS misconfiguration + XSS → cross-origin data exfiltration", "critical", [cors, x],
+            "XSS payload makes a cross-origin request to the API (CORS allows it) → "
+            "exfiltrate authenticated API response (PII, tokens, secrets) to attacker server",
+            "Confirm by: (1) serving an XSS payload that calls the sensitive endpoint "
+            "cross-origin and (2) observing the response in your OOB server. "
+            "Fix: strict CORS + HttpOnly cookies + XSS encoding.")
+    if cors:
+        return _chain(
+            "CORS misconfiguration → cross-origin data theft", "high", [cors],
+            "arbitrary origin reflected with credentials → craft a page that calls the "
+            "sensitive API on behalf of a logged-in victim and relays the response",
+            "Demo by reading an authenticated endpoint from an attacker-controlled origin.")
+    return None
+
+
+def _rule_proto_rce(f, ctx):
+    pp = _has(f, category="exploit", title_contains="prototype pollution")
+    if pp:
+        return _chain(
+            "Prototype pollution → RCE / authentication bypass", "critical", [pp],
+            "polluting Object.prototype can override security-critical properties "
+            "(e.g. isAdmin, role) in downstream code, or reach a gadget chain that "
+            "executes shell commands (e.g. child_process via a template engine or "
+            "serialization gadget)",
+            "Identify which prototype properties the application reads for access control "
+            "or command execution, then demonstrate privilege escalation or code execution.")
+    return None
+
+
+def _rule_race_business(f, ctx):
+    r = _has(f, category="exploit", title_contains="race condition")
+    if r:
+        return _chain(
+            "Race condition → unlimited resource consumption / duplicate operation", "high", [r],
+            "concurrent identical requests beat the guard → coupon/voucher applied "
+            "multiple times, funds transferred twice, points/credits duplicated",
+            "Confirm by measuring the actual financial/privilege impact per duplicate "
+            "operation; calculate realistic dollar impact for the report.")
+    return None
+
+
+def _rule_log4shell_pivot(f, ctx):
+    l4 = _has(f, category="exploit", title_contains="log4shell")
+    if l4:
+        return _chain(
+            "Log4Shell → RCE → full server compromise", "critical", [l4],
+            "JNDI callback confirmed → spin up a malicious LDAP server → "
+            "execute arbitrary bytecode → read secrets/env, pivot to cloud metadata, "
+            "dump DB, achieve persistent access",
+            "CRITICAL — maximum severity. Upgrade Log4j immediately. "
+            "Capture a minimal proof (hostname/id) for the report without causing damage.")
+    return None
+
+
+def _rule_hpp_bypass(f, ctx):
+    hpp = _has(f, category="exploit", title_contains="parameter pollution")
+    if hpp:
+        return _chain(
+            "HTTP Parameter Pollution → WAF bypass → injection", "high", [hpp],
+            "duplicate parameters confuse WAF inspection (WAF checks first value, "
+            "backend uses last) → sneak injection payloads past the filter",
+            "Combine HPP with SQLi/XSS payloads: first param=clean, second param=payload. "
+            "Demonstrate that the WAF passes but the backend evaluates the malicious value.")
+    return None
+
+
 _RULES: List[Callable] = [
     _rule_sqli_ato, _rule_jwt_forge, _rule_massassign, _rule_sqli_extract,
     _rule_rce, _rule_xxe, _rule_smuggling, _rule_xss_ato, _rule_ssrf_cloud,
     _rule_openredirect_oauth, _rule_lfi_source, _rule_secret_api,
     _rule_nextjs_admin, _rule_takeover_oauth, _rule_cache_storedxss,
+    _rule_cors_xss, _rule_proto_rce, _rule_race_business,
+    _rule_log4shell_pivot, _rule_hpp_bypass,
 ]
 
 

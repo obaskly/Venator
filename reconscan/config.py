@@ -87,6 +87,13 @@ class Config:
     js_max_files: int = 25                         # cap JS files fetched
     param_wordlist: Optional[str] = None           # file; falls back to built-in PARAM_WORDS
     wayback_limit: int = 5000                      # cap CDX rows requested
+    # --- new exploit modules ---
+    do_race: bool = True                           # race-condition detection
+    do_protopollution: bool = True                 # prototype pollution detection
+    do_log4shell: bool = True                      # Log4Shell JNDI injection (OOB only)
+    do_headerinject: bool = True                   # header injection (XSS/SQLi/SSTI)
+    do_hpp: bool = True                            # HTTP Parameter Pollution
+    do_timesqli: bool = True                       # time-based blind SQLi (slow; auto-skipped when in-band confirms)
 
     # --- knobs ---
     ports: List[int] = field(default_factory=lambda: list(DEFAULT_PORTS))

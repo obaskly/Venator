@@ -34,6 +34,7 @@ from .validate import validator
 from .score import prioritize, top_hunts
 from .report import report as reporter
 from .utils import set_verbosity
+from .active import hpp as ahpp
 
 
 BANNER = r"""
@@ -149,6 +150,18 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     help="skip JS source-map recovery + DOM-sink mining")
     ph.add_argument("--no-blindxss", action="store_true",
                     help="skip planting blind/stored XSS OOB callbacks")
+    ph.add_argument("--no-race", action="store_true",
+                    help="skip race-condition detection")
+    ph.add_argument("--no-protopollution", action="store_true",
+                    help="skip prototype pollution detection")
+    ph.add_argument("--no-log4shell", action="store_true",
+                    help="skip Log4Shell JNDI injection (OOB only)")
+    ph.add_argument("--no-headerinject", action="store_true",
+                    help="skip header injection (XSS/SQLi/SSTI via headers)")
+    ph.add_argument("--no-hpp", action="store_true",
+                    help="skip HTTP Parameter Pollution detection")
+    ph.add_argument("--no-timesqli", action="store_true",
+                    help="skip time-based blind SQLi (auto-skipped when in-band confirms)")
 
     kn = p.add_argument_group("knobs")
     kn.add_argument("--ports", default=None,
@@ -212,6 +225,12 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_exploit=not ns.no_exploit, do_chain=not ns.no_chain,
         do_apispec=not ns.no_apispec, do_parammine=not ns.no_parammine,
         do_sourcemap=not ns.no_sourcemap, do_blindxss=not ns.no_blindxss,
+        do_race=not ns.no_race,
+        do_protopollution=not ns.no_protopollution,
+        do_log4shell=not ns.no_log4shell,
+        do_headerinject=not ns.no_headerinject,
+        do_hpp=not ns.no_hpp,
+        do_timesqli=not ns.no_timesqli,
         js_max_files=ns.js_max_files, wayback_limit=ns.wayback_limit,
         param_wordlist=ns.param_wordlist,
         ports=ports, dns_wordlist=ns.dns_wordlist, dir_wordlist=ns.dir_wordlist,
@@ -461,6 +480,13 @@ def run(cfg: Config) -> dict:
         findings += vcache.check(client, service_bases)
         findings += vwcd.check(client, service_bases, recon["endpoints"], cfg, scope, audit)
         findings += vsmuggling.check(client, service_bases, cfg)
+        # HTTP Parameter Pollution (active phase — uses param surface)
+        if cfg.do_hpp:
+            _hpp_surface = {"urls": [d.get("url", "") for ep in recon["endpoints"]
+                                      for d in ep.get("discovered", [])
+                                      if isinstance(d, dict) and "?" in d.get("url", "")],
+                            "forms": []}
+            findings += ahpp.exploit(client, _hpp_surface, cfg)
 
     # ---- exploitation (confirm + PoC) ----
     oob = None

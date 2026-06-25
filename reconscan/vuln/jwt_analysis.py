@@ -21,9 +21,35 @@ from ..utils import dedup_keep_order, log
 from . import Finding
 
 JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*")
-WEAK_SECRETS = ["secret", "password", "123456", "jwt", "key", "admin", "changeme",
-                "secretkey", "supersecret", "your-256-bit-secret", "test", "qwerty",
-                "private", "token", "mysecret", "s3cr3t", "default", "jwtsecret"]
+WEAK_SECRETS = [
+    # common generics
+    "secret", "password", "123456", "jwt", "key", "admin", "changeme",
+    "secretkey", "supersecret", "your-256-bit-secret", "test", "qwerty",
+    "private", "token", "mysecret", "s3cr3t", "default", "jwtsecret",
+    # common app secrets
+    "secret123", "password123", "admin123", "letmein", "welcome",
+    "monkey", "dragon", "master", "passw0rd", "p@ssword", "p@ssw0rd",
+    "root", "toor", "pass", "1234", "12345", "123456789", "0000",
+    "111111", "abc123", "iloveyou", "sunshine", "princess", "batman",
+    # jwt-specific
+    "jwt_secret", "jwtSecret", "JWT_SECRET", "jwt-secret", "jwtsecret123",
+    "your_jwt_secret", "mysupersecretkey", "supersecretkey", "verysecret",
+    "ultra-secret", "1234567890", "abcdefgh", "aaaaaaaaaaaaaaaa",
+    # framework defaults
+    "laravel", "symfony", "rails", "django-insecure-", "flask",
+    "express", "spring", "keyboard cat", "shhhhh", "shhhhhhhhhhhhhh",
+    # app-name patterns
+    "app_secret", "app_key", "application_secret", "api_secret", "api_key",
+    "app-secret", "appsecret", "AppSecret", "AppKey", "SECRET_KEY",
+    # vendor defaults  
+    "HS256", "RS256", "none", "null", "undefined", "true", "false",
+    "00000000", "11111111", "ffffffff", "deadbeef",
+    # long passphrases people actually use
+    "thisisasecret", "thisisasecretkey", "thisisnotasecret",
+    "pleasechangethis", "changethis", "donotuseinproduction",
+    "insecure", "unsafe", "hackme", "password1", "Password1",
+    "qwertyuiop", "asdfghjkl", "zxcvbnm",
+]
 
 
 def _b64d(s: str) -> bytes:
