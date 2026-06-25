@@ -1,0 +1,10 @@
+# Core (required)
+requests>=2.28
+
+# Recommended (DNS records + subdomain resolution). If absent, the tool falls
+# back to the `dig` binary.
+dnspython>=2.3
+
+# Optional (richer TLS certificate parsing). If absent, TLS cert field
+# extraction is reduced but the scan still runs.
+cryptography>=40.0
