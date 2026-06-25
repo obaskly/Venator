@@ -196,6 +196,50 @@ class Client:
         resp.final_host_in_scope = self.scope.url_in_scope(cur_url)
         return resp
 
+    def external_request(self, method: str, url: str, *, headers: dict = None,
+                         allow_hosts: tuple = (), phase: str = "secret-validate",
+                         body_limit: int = 65_536) -> Response:
+        """A single read-only request to a THIRD-PARTY issuer API (NOT the target).
+
+        This is the one outbound path that deliberately leaves the scope guard,
+        used only to verify a *leaked credential* against the API that issued it
+        (e.g. a found GitHub token against api.github.com/user). It is:
+          * host-allowlisted   — the host MUST be in `allow_hosts` (issuer APIs only),
+          * credential-isolated — a FRESH request, never `self.session`, so the
+            target's auth cookie/bearer is never sent to the third party,
+          * rate-limited + budget-capped + audited like every other request,
+          * TLS-verified (these are real CA-signed public APIs).
+        Opt-in only (`--validate-secrets`); never fires during a default scan.
+        """
+        host = (urlparse(url).hostname or "").lower()
+        if host not in allow_hosts:
+            self.audit.record(method, url, phase=phase, note="EXTERNAL_NOT_ALLOWLISTED")
+            return Response(url, url, 0, {}, "", 0.0, [], error="not_allowlisted")
+        if self.over_budget():
+            return Response(url, url, 0, {}, "", 0.0, [], error="budget_exceeded")
+        self._req_count += 1
+        self.limiter.wait()
+        h = {"User-Agent": self.cfg.user_agent, "Accept": "*/*"}
+        if headers:
+            h.update(headers)
+        status = None
+        try:
+            resp = requests.request(
+                method, url, headers=h, timeout=self.cfg.timeout,
+                allow_redirects=False, verify=True, stream=True)
+            raw = resp.raw.read(body_limit, decode_content=True)
+            text = raw.decode(resp.encoding or "utf-8", errors="replace")
+            status = resp.status_code
+            return Response(
+                url=url, final_url=url, status=status,
+                headers={k.lower(): v for k, v in resp.headers.items()},
+                text=text, elapsed=resp.elapsed.total_seconds(), redirects=[])
+        except requests.RequestException as e:
+            return Response(url, url, 0, {}, "", 0.0, [], error=type(e).__name__)
+        finally:
+            self.audit.record(method, url, phase=phase, status=status,
+                              note="EXTERNAL_VALIDATE")
+
     def get(self, url: str, **kw) -> Response:
         return self.request("GET", url, **kw)
 

@@ -48,7 +48,7 @@ def _collect_script_urls(probe: dict, scope: Scope) -> List[str]:
     return out
 
 
-def _scan_secrets(text: str, source: str) -> List[Finding]:
+def _scan_secrets(text: str, source: str, sink: list = None) -> List[Finding]:
     findings: List[Finding] = []
     seen: Set[Tuple[str, str]] = set()
     for label, sev, rx in SECRET_PATTERNS:
@@ -60,6 +60,10 @@ def _scan_secrets(text: str, source: str) -> List[Finding]:
             if key in seen:
                 continue
             seen.add(key)
+            # stash the RAW value (off-report) so the opt-in secret-validation
+            # phase can verify it live; the Finding itself only ever stores a mask.
+            if sink is not None:
+                sink.append((label, val, source))
             masked = val[:4] + "…" + val[-4:] if len(val) > 12 else val[:3] + "…"
             findings.append(Finding(
                 title=f"Possible {label} in JavaScript",
@@ -181,8 +185,13 @@ def _extract_endpoints(text: str, scope: Scope, base: str) -> List[str]:
 
 
 def analyze(client: Client, scope: Scope, probes: List[dict], cfg: Config,
-            max_files: int = 25) -> Tuple[List[Finding], Dict[str, object]]:
-    """Returns (findings, summary). summary has js_files, endpoints, secrets_count."""
+            max_files: int = 25,
+            secret_sink: list = None) -> Tuple[List[Finding], Dict[str, object]]:
+    """Returns (findings, summary). summary has js_files, endpoints, secrets_count.
+
+    `secret_sink`, if given, collects raw (label, value, source) tuples for the
+    opt-in live secret-validation phase. Raw values never enter `summary`/report.
+    """
     log("step", "JS intelligence (endpoint + secret mining)")
     script_urls: List[str] = []
     for p in probes:
@@ -196,7 +205,7 @@ def analyze(client: Client, scope: Scope, probes: List[dict], cfg: Config,
     for p in probes:
         body = p.get("_body", "") or ""
         src = p.get("final_url") or p.get("url")
-        findings += _scan_secrets(body, src)
+        findings += _scan_secrets(body, src, secret_sink)
         endpoints += _extract_endpoints(body, scope, src)
         if cfg.do_sourcemap:
             findings += _dom_xss_leads(body, src)
@@ -208,7 +217,7 @@ def analyze(client: Client, scope: Scope, probes: List[dict], cfg: Config,
         if not resp.ok:
             continue
         fetched += 1
-        findings += _scan_secrets(resp.text, u)
+        findings += _scan_secrets(resp.text, u, secret_sink)
         endpoints += _extract_endpoints(resp.text, scope, u)
         if cfg.do_sourcemap:
             findings += _dom_xss_leads(resp.text, u)
@@ -216,7 +225,7 @@ def analyze(client: Client, scope: Scope, probes: List[dict], cfg: Config,
             if recovered:
                 maps_recovered += 1
                 # deeper mine the readable original source
-                findings += _scan_secrets(recovered, map_url)
+                findings += _scan_secrets(recovered, map_url, secret_sink)
                 endpoints += _extract_endpoints(recovered, scope, map_url)
                 findings += _dom_xss_leads(recovered, map_url)
                 findings.append(Finding(

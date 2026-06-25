@@ -23,6 +23,7 @@ phase logs once and returns nothing. Navigation is audited and politeness-spaced
 from __future__ import annotations
 
 import random
+import re
 import string
 import time
 from typing import Dict, List, Tuple
@@ -49,6 +50,25 @@ window.__rcxss = function(t){ try{ window.__rc_hits.push(String(t)); }catch(e){}
 ['alert','confirm','prompt'].forEach(function(fn){
   try{ var o=window[fn]; window[fn]=function(a){ window.__rc_hits.push('alert:'+a); return o&&o(a);}; }catch(e){}
 });
+// capture every window 'message' listener's source so we can audit it for a
+// missing origin check feeding a dangerous sink (postMessage XSS / takeover).
+window.__rc_listeners = [];
+(function(){
+  try{
+    var ael = window.addEventListener;
+    window.addEventListener = function(type, fn, opts){
+      try{ if(type==='message' && typeof fn==='function'){ window.__rc_listeners.push(fn.toString()); } }catch(e){}
+      return ael.apply(this, arguments);
+    };
+  }catch(e){}
+  try{
+    Object.defineProperty(window, 'onmessage', {
+      configurable:true,
+      set:function(fn){ try{ if(typeof fn==='function'){ window.__rc_listeners.push(fn.toString()); } }catch(e){} this.__rc_om=fn; },
+      get:function(){ return this.__rc_om; }
+    });
+  }catch(e){}
+})();
 """
 
 # request kinds worth keeping as surface: the app's real data calls (XHR/fetch/
@@ -104,6 +124,7 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
     domxss_tests = 0
     post_links: List[str] = []
     post_forms: List[dict] = []
+    pm_seen: set = set()      # dedup postMessage handler findings across pages
     spacing = max(0.0, getattr(cfg, "min_interval", 0.0))
 
     try:
@@ -181,6 +202,12 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
                                 post_forms.append(f)
                 except Exception:
                     pass
+                # postMessage listener audit (origin-less handler → dangerous sink)
+                try:
+                    for f in _postmessage_findings(page, url, pm_seen):
+                        findings.append(f)
+                except Exception:
+                    pass
                 if spacing:
                     time.sleep(spacing)
 
@@ -219,6 +246,19 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
                 if spacing:
                     time.sleep(spacing)
 
+            # --- pass 4: client-side prototype pollution (execution-confirmed) ---
+            cpp_seen: set = set()
+            for url in dedup_keep_order(seeds)[:max_pages // 2 or 1]:
+                base = url.split("#")[0].split("?")[0]
+                if base in cpp_seen or not scope.url_in_scope(base):
+                    continue
+                cpp_seen.add(base)
+                finding = _clientpp_finding(page, scope, base, audit)
+                if finding:
+                    findings.append(finding)
+                if spacing:
+                    time.sleep(spacing)
+
             ctx.close()
             browser.close()
     except Exception as e:
@@ -227,7 +267,8 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
     urls = dedup_keep_order(post_links + sorted(captured))
     forms = _dedup_forms(post_forms)
     if findings:
-        log("vuln", f"browser: {len(findings)} confirmed DOM-XSS")
+        log("vuln", f"browser: {len(findings)} client-side finding(s) "
+                    "(DOM-XSS / postMessage / prototype pollution)")
     log("ok", f"browser: {rendered} page(s) rendered, {len(urls)} URL(s) "
              f"({len(captured)} via network), {len(forms)} form(s), "
              f"{domxss_tests} DOM-XSS test(s)")
@@ -270,6 +311,112 @@ def _domxss_finding(url: str, sink: str) -> Finding:
                         "textContent and a strict CSP that forbids inline script."),
         confidence="confirmed",
         poc=f"open in a browser: {url}")
+
+
+# execution sinks reachable from event.data — high if code/HTML, medium if navigation
+_PM_HIGH_SINKS = [
+    ("innerHTML", "innerHTML"), ("outerHTML", "outerHTML"),
+    ("insertAdjacentHTML", "insertAdjacentHTML"), ("document.write", "document.write"),
+    ("dangerouslySetInnerHTML", "dangerouslySetInnerHTML"),
+    (r"\beval\s*\(", "eval()"), (r"\bFunction\s*\(", "Function()"),
+    (r"\.src\s*=", ".src ="), (r"setTimeout\s*\(\s*[^,]*data", "setTimeout(data)"),
+]
+_PM_MED_SINKS = [
+    (r"location\s*\.\s*href", "location.href"), (r"location\s*=", "location ="),
+    (r"location\s*\.\s*(?:assign|replace)\s*\(", "location.assign/replace"),
+    (r"window\.open\s*\(", "window.open()"),
+]
+_ORIGIN_CHECK = re.compile(r"\borigin\b", re.I)
+# URL shapes that a buggy query/hash parser turns into Object.prototype writes
+_PP_VECTORS = ["?__proto__[{P}]={V}", "?__proto__.{P}={V}",
+               "#__proto__[{P}]={V}", "?constructor[prototype][{P}]={V}",
+               "#/?__proto__[{P}]={V}"]
+
+
+def _analyze_listener(src: str) -> Tuple[str, str]:
+    """(severity, sink) for a message-handler source, or ('','') if not exploitable."""
+    has_origin = bool(_ORIGIN_CHECK.search(src or ""))
+    if has_origin:
+        return "", ""   # handler validates origin (conservative: no finding)
+    for rx, name in _PM_HIGH_SINKS:
+        if re.search(rx, src):
+            return "high", name
+    for rx, name in _PM_MED_SINKS:
+        if re.search(rx, src):
+            return "medium", name
+    return "", ""
+
+
+def _postmessage_findings(page, url: str, seen: set) -> List[Finding]:
+    out: List[Finding] = []
+    try:
+        srcs = page.evaluate("window.__rc_listeners || []") or []
+    except Exception:
+        return out
+    for src in srcs:
+        sev, sink = _analyze_listener(src or "")
+        if not sink:
+            continue
+        key = (sink, (src or "")[:120])
+        if key in seen:
+            continue
+        seen.add(key)
+        snippet = re.sub(r"\s+", " ", (src or "").strip())[:160]
+        out.append(Finding(
+            title=f"postMessage handler without origin check → {sink}",
+            severity=sev, category="xss", target=url,
+            evidence=(
+                f"A window 'message' listener on {url} passes event.data into {sink} "
+                f"with no event.origin validation, so ANY page that frames/opens this "
+                f"one can drive that sink via postMessage "
+                f"({'DOM-XSS' if sev == 'high' else 'client-side redirect/clobbering'}). "
+                f"Handler: `{snippet}`"),
+            recommendation=("Validate event.origin against an allowlist at the top of the "
+                            "handler and reject unexpected senders; never feed event.data "
+                            "into HTML/JS/navigation sinks unsanitised."),
+            confidence="firm",
+            poc=("// from an attacker page that opened/framed the target:\n"
+                 "win.postMessage(\"<img src=x onerror=alert(document.domain)>\", \"*\")")))
+    return out
+
+
+def _clientpp_finding(page, scope, base_url: str, audit):
+    prop = "rcp" + _tok(6)
+    canary = "v" + _tok(6)
+    for vec in _PP_VECTORS:
+        target = base_url + vec.format(P=prop, V=canary)
+        if not scope.url_in_scope(target):
+            continue
+        if audit:
+            audit.record("GET", target, phase="browser")
+        try:
+            page.goto(target, wait_until="load")
+            page.wait_for_timeout(400)
+            polluted = page.evaluate(
+                "(a) => { try { return Object.prototype[a[0]] === a[1]; } "
+                "catch(e){ return false; } }", [prop, canary])
+        except Exception:
+            continue
+        if polluted:
+            try:
+                page.evaluate("(p) => { try { delete Object.prototype[p]; } catch(e){} }", prop)
+            except Exception:
+                pass
+            return Finding(
+                title="Client-side prototype pollution confirmed (Object.prototype writable via URL)",
+                severity="high", category="exploit", target=target,
+                evidence=(
+                    f"Navigating to a URL carrying `__proto__[{prop}]={canary}` caused the "
+                    f"page's own JavaScript to set Object.prototype.{prop}={canary!r} "
+                    f"(read back live in the rendered page). An attacker controls a global "
+                    f"prototype property — chainable to DOM-XSS or logic bypass via a gadget. "
+                    f"Execution-confirmed, not a guess."),
+                recommendation=("Don't recursively merge/assign untrusted URL data into objects; "
+                                "block `__proto__`/`constructor`/`prototype` keys, use Map or "
+                                "Object.create(null), and freeze critical prototypes."),
+                confidence="confirmed",
+                poc=f"open in a browser: {target}")
+    return None
 
 
 def _dedup_forms(forms: List[dict]) -> List[dict]:

@@ -94,6 +94,7 @@ class Config:
     do_headerinject: bool = True                   # header injection (XSS/SQLi/SSTI)
     do_hpp: bool = True                            # HTTP Parameter Pollution
     do_timesqli: bool = True                       # time-based blind SQLi (slow; auto-skipped when in-band confirms)
+    validate_secrets: bool = False                 # OPT-IN: replay mined secrets read-only against issuer APIs (3rd-party)
 
     # --- knobs ---
     ports: List[int] = field(default_factory=lambda: list(DEFAULT_PORTS))

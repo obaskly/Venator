@@ -162,6 +162,10 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     help="skip HTTP Parameter Pollution detection")
     ph.add_argument("--no-timesqli", action="store_true",
                     help="skip time-based blind SQLi (auto-skipped when in-band confirms)")
+    ph.add_argument("--validate-secrets", action="store_true",
+                    help="OPT-IN: replay mined secrets read-only against their issuer APIs "
+                         "(GitHub/Slack/Stripe/...) to confirm which are LIVE. Contacts "
+                         "third-party hosts outside scope; off by default.")
 
     kn = p.add_argument_group("knobs")
     kn.add_argument("--ports", default=None,
@@ -231,6 +235,7 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_headerinject=not ns.no_headerinject,
         do_hpp=not ns.no_hpp,
         do_timesqli=not ns.no_timesqli,
+        validate_secrets=ns.validate_secrets,
         js_max_files=ns.js_max_files, wayback_limit=ns.wayback_limit,
         param_wordlist=ns.param_wordlist,
         ports=ports, dns_wordlist=ns.dns_wordlist, dir_wordlist=ns.dir_wordlist,
@@ -271,6 +276,7 @@ def run(cfg: Config) -> dict:
                    "crawl": {}, "browser": {}}
     findings: List[Finding] = []
     crawl_forms: List[dict] = []
+    secrets_raw: List[tuple] = []   # raw (label,value,source) for opt-in secret validation
     warnings: List[str] = []
     triage: dict = {}
     pool = cf.ThreadPoolExecutor(max_workers=cfg.effective_workers)
@@ -372,7 +378,8 @@ def run(cfg: Config) -> dict:
     if cfg.do_jsintel and services:
         js_findings, js_summary = jsintel.analyze(
             client, scope, [s["primary"] for s in services], cfg,
-            max_files=cfg.js_max_files)
+            max_files=cfg.js_max_files,
+            secret_sink=(secrets_raw if cfg.validate_secrets else None))
         findings += js_findings
         recon["jsintel"] = js_summary
 
@@ -508,6 +515,11 @@ def run(cfg: Config) -> dict:
     finally:
         if oob:
             oob.stop()
+
+    # ---- live secret validation (opt-in; read-only calls to issuer APIs) ----
+    if cfg.validate_secrets and secrets_raw:
+        from .exploit import secretvalidate
+        findings += secretvalidate.exploit(client, secrets_raw, cfg)
 
     # ---- exploit chaining (assemble high-impact attack paths) ----
     if cfg.do_chain:
