@@ -1,4 +1,4 @@
-# reconscan
+# Venator
 
 An **elite, modular CLI** for authorized recon and non-destructive vulnerability detection — built to compress recon → triage → "what do I test first" into one rate-limited, audit-logged run.
 
@@ -10,7 +10,7 @@ An **elite, modular CLI** for authorized recon and non-destructive vulnerability
 <summary><strong>🔓 Exploitation &amp; Chaining</strong></summary>
 <br>
 
-reconscan **confirms** vulnerabilities by demonstrating impact, then **chains** them into submittable, high-payout attack paths:
+Venator **confirms** vulnerabilities by demonstrating impact, then **chains** them into submittable, high-payout attack paths:
 
 - **Exploitation phase** — auto-detects HTML forms and JSON APIs (no per-site config): SQLi/NoSQLi auth bypass, mass-assignment privilege escalation, reflected XSS execution, OS command injection (`id` output), LFI/path traversal (read-only, hard-signature confirmed), WAF-aware retries (comment-split, base64 wraps, keyword case-mix), JWT weaknesses (alg:none, weak-secret crack), IDOR probing, sensitive-data exposure (Luhn cards, private keys). Each finding is marked `EXPLOITED` with a copy-paste `curl` PoC.
 - **Deep class coverage** — broken auth (default creds + user enum), GraphQL (introspection + clairvoyance schema recovery + alias/array batching + resolver injection → RCE/SQLi), stored XSS, CSRF, SSTI→RCE (8 template engines), XXE (in-band file read), HTTP request smuggling (CL.TE/TE.CL), WebSocket CSWSH.
@@ -36,7 +36,7 @@ reconscan **confirms** vulnerabilities by demonstrating impact, then **chains** 
 <summary><strong>🧠 Why It's Different</strong></summary>
 <br>
 
-Most recon scripts dump a flat list. reconscan adds the parts that actually win bounties:
+Most recon scripts dump a flat list. Venator adds the parts that actually win bounties:
 
 - **JS intelligence** — mines JS bundles for hidden API routes and leaked secrets (AWS, Google, Stripe, GitHub, Slack, JWT, private keys…).
 - **Wayback / CDX mining** — keyless historical URL discovery; flags forgotten endpoints (`.env`, `.sql`, `/admin`, `?id=`).
@@ -99,7 +99,7 @@ pip install -r requirements.txt
 <br>
 
 ```bash
-python3 reconscan.py <apex-domain> [options]
+python3 venator.py <apex-domain> [options]
 ```
 
 On start, it prints the legal banner and asks you to **type the apex domain** to confirm authorization. Skip with `--yes` in automation you control.
@@ -108,22 +108,22 @@ On start, it prints the legal banner and asks you to **type the apex domain** to
 
 ```bash
 # Full scan (1 req/sec)
-python3 reconscan.py example.com
+python3 venator.py example.com
 
 # Faster, custom output dir
-python3 reconscan.py example.com --yes --delay 0.3 -o output/example
+python3 venator.py example.com --yes --delay 0.3 -o output/example
 
 # Fast triage (skip slow phases)
-python3 reconscan.py example.com --yes --no-subdomains --no-ports --no-nuclei
+python3 venator.py example.com --yes --no-subdomains --no-ports --no-nuclei
 
 # Deep recon only (no vuln phase)
-python3 reconscan.py example.com --no-vuln
+python3 venator.py example.com --no-vuln
 
 # JS-secret focus
-python3 reconscan.py example.com --js-max-files 60 --no-dir-brute
+python3 venator.py example.com --js-max-files 60 --no-dir-brute
 
 # Full deep run with nuclei
-python3 reconscan.py example.com --yes --delay 0.2 --nuclei-rate 40 --nuclei-timeout 600 --max-hosts 40
+python3 venator.py example.com --yes --delay 0.2 --nuclei-rate 40 --nuclei-timeout 600 --max-hosts 40
 ```
 
 </details>

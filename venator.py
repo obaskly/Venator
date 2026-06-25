@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry shim so the tool can be run as `python3 reconscan.py <target>`."""
+"""Entry shim so the tool can be run as `python3 venator.py <target>`."""
 from reconscan.cli import main
 
 if __name__ == "__main__":
