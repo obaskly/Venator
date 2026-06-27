@@ -85,6 +85,8 @@ def build(meta: dict, recon: dict, findings, audit_count: int,
             "crawl": recon.get("crawl", {}),
             "browser": recon.get("browser", {}),
             "wayback": recon.get("wayback", {}),
+            "deep_dns": recon.get("deep_dns", {}),
+            "urlclass": recon.get("urlclass", {}),
             "oob": recon.get("oob", {}),
         },
         "findings": [f.to_dict() for f in findings],
@@ -236,6 +238,20 @@ def write_summary(report: dict, path: str) -> str:
         A("_none_")
     A("")
 
+    dd = report["recon"].get("deep_dns") or {}
+    if dd and (dd.get("axfr_allowed") or dd.get("srv") or dd.get("new_hosts")):
+        A("### Deep DNS (AXFR / SRV)")
+        if dd.get("axfr_allowed"):
+            A(f"- ⚠ **Zone transfer (AXFR) ALLOWED** — {len(dd.get('axfr_names', []))} "
+              f"names disclosed by `{', '.join(dd.get('ns', []))}`")
+        for fq, vals in (dd.get("srv") or {}).items():
+            for v in vals:
+                A(f"- SRV `{fq}`: `{v}`")
+        if dd.get("new_hosts"):
+            A(f"- New hosts from AXFR/SRV: " +
+              ", ".join(f"`{h}`" for h in dd["new_hosts"][:30]))
+        A("")
+
     A("### Open ports")
     ports = report["recon"]["ports"]
     any_port = False
@@ -301,6 +317,23 @@ def write_summary(report: dict, path: str) -> str:
           f"juicy: {wb.get('juicy',0)}")
         for u in (wb.get("juicy_urls") or [])[:30]:
             A(f"  - `{u}`")
+        A("")
+
+    # gf-style parameter attack-surface map
+    uc = report["recon"].get("urlclass") or {}
+    if uc and (uc.get("hotspots") or uc.get("interesting_files")):
+        A("### Parameter attack-surface map (gf-style)")
+        bc = uc.get("by_class") or {}
+        if bc:
+            A("- By class: " + ", ".join(f"**{c}** {n}" for c, n in
+                                          sorted(bc.items(), key=lambda kv: -kv[1])))
+        for h in (uc.get("hotspots") or [])[:30]:
+            A(f"  - `{h['param']}` [{', '.join(h['classes'])}] @ `{h['url']}`")
+        files = uc.get("interesting_files") or []
+        if files:
+            A(f"- Interesting files ({len(files)}):")
+            for f in files[:30]:
+                A(f"  - `{f}`")
         A("")
 
     # filtered false positives (transparency)

@@ -20,7 +20,7 @@ from .utils import Scope, log, dedup_keep_order, is_catch_all_artifact, is_logou
 from .oob import OOBClient
 from .recon import dns_records, subdomains, ports as portscan, probe as prober, \
     fingerprint as fp, endpoints as endp, jsintel, wayback, takeover, favicon, \
-    apispec, crawler
+    apispec, crawler, brokenlinks, urlclass
 from .vuln import headers as vheaders, tls as vtls, misconfig as vmisc, \
     cors as vcors, reflection as vrefl, cve as vcve, nuclei as vnuclei, \
     graphql as vgraphql, nextjs as vnextjs, cache as vcache, email_sec as vemail, \
@@ -70,6 +70,9 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                         "rate stays bounded by --delay for politeness")
     g.add_argument("--verify-tls", action="store_true",
                    help="verify TLS certs on HTTP requests")
+    g.add_argument("--no-adaptive-rate", action="store_true",
+                   help="disable automatic back-off on 429/503 (adaptive rate "
+                        "limiting only ever slows down, never below --delay)")
     g.add_argument("--no-rotate-ua", action="store_true",
                    help="disable per-request random User-Agent rotation")
     g.add_argument("-y", "--yes", action="store_true",
@@ -162,6 +165,12 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     help="skip HTTP Parameter Pollution detection")
     ph.add_argument("--no-timesqli", action="store_true",
                     help="skip time-based blind SQLi (auto-skipped when in-band confirms)")
+    ph.add_argument("--no-subperms", action="store_true",
+                    help="skip the altdns-style subdomain permutation engine")
+    ph.add_argument("--no-urlclass", action="store_true",
+                    help="skip gf-style URL/parameter attack-surface classification")
+    ph.add_argument("--no-brokenlinks", action="store_true",
+                    help="skip broken-link hijack scan (references to unregistered domains)")
     ph.add_argument("--validate-secrets", action="store_true",
                     help="OPT-IN: replay mined secrets read-only against their issuer APIs "
                          "(GitHub/Slack/Stripe/...) to confirm which are LIVE. Contacts "
@@ -208,6 +217,7 @@ def build_config(ns: argparse.Namespace) -> Config:
         delay=ns.delay, rate_limit=ns.rate_limit, timeout=ns.timeout,
         threads=ns.threads, workers=ns.workers, verify_tls=ns.verify_tls,
         max_requests=ns.max_requests, rotate_ua=not ns.no_rotate_ua,
+        adaptive_rate=not ns.no_adaptive_rate,
         extra_in_scope=extras,
         auth_cookie=ns.cookie, auth_bearer=ns.auth_bearer, auth_headers=ns.header,
         do_oob=not ns.no_oob, oob_provider=ns.oob_provider,
@@ -235,6 +245,9 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_headerinject=not ns.no_headerinject,
         do_hpp=not ns.no_hpp,
         do_timesqli=not ns.no_timesqli,
+        do_subperms=not ns.no_subperms,
+        do_urlclass=not ns.no_urlclass,
+        do_brokenlinks=not ns.no_brokenlinks,
         validate_secrets=ns.validate_secrets,
         js_max_files=ns.js_max_files, wayback_limit=ns.wayback_limit,
         param_wordlist=ns.param_wordlist,
@@ -297,6 +310,32 @@ def run(cfg: Config) -> dict:
         recon["subdomains"] = [{"host": cfg.target,
                                 "addresses": dns_records.resolve_a(apex_host),
                                 "live": True}]
+
+    # deep DNS: zone-transfer (AXFR) + SRV service records. Both can disclose
+    # hosts no brute/permutation surfaces; merge any new in-scope names into the
+    # subdomain set so they flow into probing/vuln just like discovered subs.
+    if cfg.do_dns and not _looks_like_ip(apex_host) and ":" not in cfg.target:
+        ns_hosts = dns_records.resolve_ns(apex_host)
+        axfr_names, axfr_find = dns_records.try_axfr(apex_host, ns_hosts, audit)
+        srv_records, srv_targets = dns_records.enum_srv(apex_host, audit)
+        findings += axfr_find
+        existing = {s["host"] for s in recon["subdomains"]}
+        new_names = {n for n in (axfr_names | srv_targets)
+                     if scope.host_in_scope(n) and n not in existing}
+        for nm in sorted(new_names):
+            addrs = dns_records.resolve_a(nm)
+            recon["subdomains"].append({"host": nm, "addresses": addrs,
+                                        "live": bool(addrs), "source": "deep-dns"})
+        recon["deep_dns"] = {
+            "ns": ns_hosts,
+            "axfr_allowed": bool(axfr_find),
+            "axfr_names": sorted(axfr_names),
+            "srv": srv_records,
+            "srv_targets": sorted(srv_targets),
+            "new_hosts": sorted(new_names),
+        }
+        if new_names:
+            log("ok", f"deep DNS: +{len(new_names)} new in-scope host(s) from AXFR/SRV")
 
     live_hosts = [s["host"] for s in recon["subdomains"] if s.get("live")]
     # the explicit target must always be probed — include it if it resolves, is a
@@ -434,6 +473,10 @@ def run(cfg: Config) -> dict:
     if cfg.do_takeover:
         findings += takeover.scan(client, deep_hosts, cfg)
 
+    # broken-link hijack — references to UNREGISTERED external domains (DNS-only)
+    if cfg.do_brokenlinks and service_bases:
+        findings += brokenlinks.check(client, service_bases, scope, cfg, audit)
+
     # ---- vuln (detection only), scoped to in-scope services ----
     if cfg.do_vuln:
         ep_by_base = {e["base_url"]: e for e in recon["endpoints"]}
@@ -537,8 +580,15 @@ def run(cfg: Config) -> dict:
         findings, filtered, triage = validator.validate(client, findings, cfg)
         recon["filtered_findings"] = [f.to_dict() for f in filtered]
 
-    # ---- bounty prioritization ----
-    prioritize(findings)
+    # ---- gf-style URL/param attack-surface classification (issues no requests) ----
+    hot_targets: set = set()
+    if cfg.do_urlclass:
+        uc_summary, hot_targets, uc_findings = urlclass.classify(recon)
+        recon["urlclass"] = uc_summary
+        findings += uc_findings
+
+    # ---- bounty prioritization (hot params bubble matching findings up) ----
+    prioritize(findings, hot_targets)
     hunts = top_hunts(findings)
 
     finished = datetime.now(timezone.utc)

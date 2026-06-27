@@ -33,6 +33,7 @@ class Config:
     rotate_ua: bool = True                          # rotate a realistic UA per request
     verify_tls: bool = False                       # don't choke on self-signed during recon
     max_retries: int = 2
+    adaptive_rate: bool = True                      # back off automatically on 429/503 (never faster than the floor)
 
     # --- scope guard (non-negotiable) ---
     # Only the apex and its subdomains are ever contacted. Extra allowed hosts
@@ -94,6 +95,9 @@ class Config:
     do_headerinject: bool = True                   # header injection (XSS/SQLi/SSTI)
     do_hpp: bool = True                            # HTTP Parameter Pollution
     do_timesqli: bool = True                       # time-based blind SQLi (slow; auto-skipped when in-band confirms)
+    do_subperms: bool = True                        # altdns-style subdomain permutation engine
+    do_urlclass: bool = True                        # gf-style URL/param attack-surface classification
+    do_brokenlinks: bool = True                     # broken-link hijack (DNS-only, references to unregistered domains)
     validate_secrets: bool = False                 # OPT-IN: replay mined secrets read-only against issuer APIs (3rd-party)
 
     # --- knobs ---

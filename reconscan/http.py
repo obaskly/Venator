@@ -48,7 +48,11 @@ class Client:
         self.cfg = config
         self.scope = scope
         self.audit = audit
-        self.limiter = RateLimiter(config.min_interval)
+        self.limiter = RateLimiter(
+            config.min_interval,
+            adaptive=getattr(config, "adaptive_rate", False),
+            max_interval=max(config.min_interval * 20, 30.0))
+        self._throttle_warned = False
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": config.user_agent,
                                      "Accept": "*/*"})
@@ -120,6 +124,27 @@ class Client:
         if self._user_auth.get("Authorization"):
             self.session.headers["Authorization"] = self._user_auth["Authorization"]
 
+    def _throttle_feedback(self, status, headers) -> None:
+        """Feed the adaptive rate limiter: 429/503 -> back off (honour
+        Retry-After), clean 2xx/3xx -> ease back toward the floor. No-op unless
+        adaptive rate limiting is enabled."""
+        if not self.limiter.adaptive or not status:
+            return
+        if status in (429, 503):
+            ra = 0.0
+            try:
+                ra = float((headers or {}).get("retry-after", "") or 0)
+            except (TypeError, ValueError):
+                ra = 0.0
+            self.limiter.penalize(ra)
+            if not self._throttle_warned:
+                self._throttle_warned = True
+                log("warn", f"server throttling ({status}) — adaptive back-off to "
+                            f"{self.limiter.current():.1f}s spacing "
+                            f"(disable with --no-adaptive-rate)")
+        elif status < 400:
+            self.limiter.reward()
+
     def _single(self, method: str, url: str, phase: str, body_limit: int,
                 headers: dict) -> Response:
         """One physical request (NO auto-redirect). Rate-limited + audited."""
@@ -140,6 +165,7 @@ class Client:
             raw = resp.raw.read(body_limit, decode_content=True)
             text = raw.decode(resp.encoding or "utf-8", errors="replace")
             status = resp.status_code
+            self._throttle_feedback(status, resp.headers)
             return Response(
                 url=url, final_url=url, status=status,
                 headers={k.lower(): v for k, v in resp.headers.items()},
@@ -275,6 +301,7 @@ class Client:
             raw = resp.raw.read(2_000_000, decode_content=True)
             text = raw.decode(resp.encoding or "utf-8", errors="replace")
             status = resp.status_code
+            self._throttle_feedback(status, resp.headers)
             fin = resp.url
             return Response(url, fin, status,
                             {k.lower(): v for k, v in resp.headers.items()},
@@ -370,6 +397,7 @@ class Client:
             raw = resp.raw.read(2_000_000, decode_content=True)
             text = raw.decode(resp.encoding or "utf-8", errors="replace")
             status = resp.status_code
+            self._throttle_feedback(status, resp.headers)
             return Response(url, resp.url, status,
                             {k.lower(): v for k, v in resp.headers.items()},
                             text, resp.elapsed.total_seconds(), [])
@@ -406,6 +434,7 @@ class Client:
             raw = resp.raw.read(2_000_000, decode_content=True)
             text = raw.decode(resp.encoding or "utf-8", errors="replace")
             status = resp.status_code
+            self._throttle_feedback(status, resp.headers)
             return Response(url, resp.url, status,
                             {k.lower(): v for k, v in resp.headers.items()},
                             text, resp.elapsed.total_seconds(), [])

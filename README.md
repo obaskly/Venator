@@ -49,6 +49,10 @@ Most recon scripts dump a flat list. Venator adds the parts that actually win bo
 - **JS intelligence** — mines JS bundles for hidden API routes and leaked secrets (AWS, Google, Stripe, GitHub, Slack, JWT, private keys…).
 - **Wayback / CDX mining** — keyless historical URL discovery; flags forgotten endpoints (`.env`, `.sql`, `/admin`, `?id=`).
 - **Subdomain takeover** — dangling-CNAME detection against 17 service fingerprints (S3, GitHub Pages, Heroku, Fastly, Netlify…).
+- **Subdomain permutations** — altdns-style mutation engine derives new candidates from already-known subs (tier/service prefixes + numeric increments), resolves them, and wildcard-filters the hits.
+- **Deep DNS** — attempts an AXFR zone transfer against every authoritative name server (a single misconfig that dumps the whole zone) and enumerates common SRV service records; any host either discloses is folded straight back into the probe/vuln surface.
+- **Broken-link hijacking** — extracts external assets referenced by in-scope pages and flags any whose registrable domain is **unregistered** (NXDOMAIN → claimable for stored-XSS / phishing / supply-chain). DNS-only: it never sends HTTP off-scope and never registers anything.
+- **Parameter attack-surface map (gf-style)** — classifies every discovered URL parameter by the bug class its name historically correlates with (SQLi/SSRF/LFI/redirect/SSTI/IDOR/XSS), surfaces interesting files (`.env`/`.bak`/`.git`/`openapi.json`…), and **boosts the hunt ranking** of findings that sit on a high-value parameter. Issues no requests — pure classification of existing surface.
 - **GraphQL introspection** — locates GraphQL endpoints and checks if the schema is exposed.
 - **CVE → exploitation intel** — enriches detected CVEs with nuclei metadata (CVSS, PoC links) and optional `searchsploit` ExploitDB matches.
 - **Validation pass** — re-confirms findings, detects soft-404s (the #1 false-positive source), and de-duplicates.
@@ -72,6 +76,7 @@ Enforced in code, not by convention:
 
 - **Scope guard** — only the target apex, its subdomains, and `--extra-scope` hosts are ever contacted. Out-of-scope URLs raise `ScopeError`, are logged as `BLOCKED_OUT_OF_SCOPE`, and dropped.
 - **Global rate limiter** — one thread-safe limiter spaces all outbound requests by `--delay` (or `1/--rate-limit`). More threads ≠ more req/sec.
+- **Adaptive back-off** — when the target answers `429`/`503` (honouring `Retry-After`), the spacing widens automatically and eases back after a clean streak. It only ever *slows down* — never below your configured floor — so it can't make a scan louder than you asked. Disable with `--no-adaptive-rate`.
 - **Audit log** — every request (method, URL, timestamp, phase, status, tool) appended to `output/<target>/audit.jsonl`.
 - **Proof-over-damage** — confirms with minimal benign indicators, not destruction: benign canary tokens for reflection, read-only GraphQL introspection and file/secret reads, junk (non-security) property names for prototype pollution. POST is used only where a bug class requires it (auth bypass, mass-assignment, prototype pollution, race) and the race probe sends one small bounded concurrent burst — no fuzzing, no credential brute, no DoS-style volume.
 - **Degraded-run detection** — if every live host fails HTTP probing, the report is flagged `DEGRADED RUN` instead of silently appearing "clean".
@@ -173,7 +178,7 @@ python3 venator.py example.com --yes --delay 0.2 --nuclei-rate 40 --nuclei-timeo
 
 **Phase toggles**
 
-`--no-subdomains` `--no-dns` `--no-ports` `--no-probe` `--no-fingerprint` `--no-endpoints` `--no-vuln` `--no-nuclei` `--no-external` `--no-dir-brute` `--no-jsintel` `--no-wayback` `--no-takeover` `--no-graphql` `--no-validate` `--no-cve-intel` `--no-active` `--no-exploit` `--no-chain` `--no-apispec` `--no-parammine` `--no-sourcemap` `--no-blindxss`
+`--no-subdomains` `--no-dns` `--no-ports` `--no-probe` `--no-fingerprint` `--no-endpoints` `--no-vuln` `--no-nuclei` `--no-external` `--no-dir-brute` `--no-jsintel` `--no-wayback` `--no-takeover` `--no-graphql` `--no-validate` `--no-cve-intel` `--no-active` `--no-exploit` `--no-chain` `--no-apispec` `--no-parammine` `--no-sourcemap` `--no-blindxss` `--no-subperms` `--no-urlclass` `--no-brokenlinks` `--no-adaptive-rate`
 
 **Knobs**
 | Flag | Default | Meaning |
@@ -199,15 +204,17 @@ The scan auto-detects CPU count and runs independent phases concurrently: subdom
 
 **Phase order:**
 ```
-subdomains → dns → ports → probe → fingerprint → endpoints
+subdomains (+ altdns permutations) → dns (+ AXFR / SRV) → ports → probe
+  → fingerprint → endpoints
   → JS intel → recursive crawl (+katana) → headless browser (SPA + DOM-XSS)
-  → wayback → takeover → favicon hash
+  → wayback → takeover → broken-link hijack → favicon hash
   → vuln (headers, tls, cors, reflection, misconfig, graphql, CVE, email,
           exposure: .git / actuator / .env, nuclei)
   → active probing (403/401 bypass, open-redirect, CRLF, injection leads,
                     OAuth, Next.js CVE-2025-29927, cache poisoning)
   → exploitation (SQLi auth-bypass, XSS, command injection — PoC)
-  → chaining → CVE intel → validation → bounty prioritization → report
+  → chaining → CVE intel → validation → parameter attack-surface map
+  → bounty prioritization → report
 ```
 
 </details>

@@ -101,23 +101,65 @@ class Scope:
 
 # ---------------------------------------------------------------- rate limiter
 class RateLimiter:
-    """Global minimum spacing between outbound requests. Thread-safe."""
+    """Global minimum spacing between outbound requests. Thread-safe.
 
-    def __init__(self, min_interval: float):
-        self.min_interval = max(0.0, min_interval)
+    Adaptive mode (opt-in): when the target answers 429/503 (or sends a
+    Retry-After), the spacing widens — exponential back-off, honouring
+    Retry-After — so the scan automatically becomes politer under pressure; a
+    sustained streak of clean responses relaxes it back toward the configured
+    floor. Adaptation only ever *slows down*: it never drops below the user's
+    configured spacing, so it can't make a scan louder than requested."""
+
+    def __init__(self, min_interval: float, adaptive: bool = False,
+                 max_interval: float = 30.0):
+        self.base_interval = max(0.0, min_interval)
+        self.min_interval = self.base_interval   # current spacing (may widen)
+        self.adaptive = adaptive
+        self.max_interval = max(self.base_interval, max_interval)
         self._lock = threading.Lock()
         self._next_allowed = 0.0
+        self._ok_streak = 0
+        self.throttle_events = 0
 
     def wait(self) -> None:
-        if self.min_interval <= 0:
+        if self.min_interval <= 0 and not self.adaptive:
             return
         with self._lock:
+            if self.min_interval <= 0:
+                return
             now = time.monotonic()
             sleep_for = self._next_allowed - now
             if sleep_for > 0:
                 time.sleep(sleep_for)
                 now = time.monotonic()
             self._next_allowed = now + self.min_interval
+
+    def penalize(self, retry_after: float = 0.0) -> None:
+        """Throttle signal (429/503). Widen the spacing (exp back-off) or jump to
+        Retry-After, whichever is larger; capped at max_interval."""
+        if not self.adaptive:
+            return
+        with self._lock:
+            self.throttle_events += 1
+            self._ok_streak = 0
+            widened = max(self.min_interval * 2.0, self.base_interval * 2.0, 0.5)
+            if retry_after and retry_after > 0:
+                widened = max(widened, retry_after)
+            self.min_interval = min(self.max_interval, widened)
+
+    def reward(self) -> None:
+        """A clean response. After a streak, ease the spacing back toward the
+        configured floor (never below it)."""
+        if not self.adaptive or self.min_interval <= self.base_interval:
+            return
+        with self._lock:
+            self._ok_streak += 1
+            if self._ok_streak >= 10:
+                self._ok_streak = 0
+                self.min_interval = max(self.base_interval, self.min_interval * 0.7)
+
+    def current(self) -> float:
+        return self.min_interval
 
 
 # ---------------------------------------------------------------- misc

@@ -7,9 +7,15 @@ leads with a ranked 'hunt these first' list instead of a flat dump.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional, Set
+from urllib.parse import urlparse
 
 from .vuln import Finding
+
+# finding categories that gain priority when they sit on a gf-classified
+# high-value parameter (see recon/urlclass.py)
+_HOT_PARAM_CATS = {"sqli", "ssrf", "lfi", "ssti", "redirect", "xss", "exploit",
+                   "cmdi", "rce", "idor", "bypass"}
 
 _SEV_BASE = {"critical": 100, "high": 70, "medium": 40, "low": 15, "info": 5}
 
@@ -57,19 +63,33 @@ def _asset_value(f: Finding) -> int:
     return min(25, 6 * sum(1 for w in _HOT_WORDS if w in blob))
 
 
-def score_finding(f: Finding) -> int:
+def _on_hot_target(target: str, hot_targets: Set[str]) -> bool:
+    if not hot_targets:
+        return False
+    try:
+        pr = urlparse(target)
+    except Exception:
+        return False
+    return f"{pr.netloc}{pr.path}" in hot_targets
+
+
+def score_finding(f: Finding, hot_targets: Optional[Set[str]] = None) -> int:
     s = _SEV_BASE.get(f.severity, 5)
     s += _CATEGORY_BONUS.get(f.category, 0)
     s += _exploitability(f)
     s += _asset_value(f)
     if f.validated is True:
         s += 8
+    # gf-classified high-value parameter on this URL -> bump it up the hunt list
+    if f.category in _HOT_PARAM_CATS and _on_hot_target(f.target, hot_targets):
+        s += 10
     return s
 
 
-def prioritize(findings: List[Finding]) -> List[Finding]:
+def prioritize(findings: List[Finding],
+               hot_targets: Optional[Set[str]] = None) -> List[Finding]:
     for f in findings:
-        f.priority = score_finding(f)
+        f.priority = score_finding(f, hot_targets)
     return findings
 
 
