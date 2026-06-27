@@ -59,7 +59,7 @@ Most recon scripts dump a flat list. Venator adds the parts that actually win bo
 - **Catch-all / SPA-aware** — drops soft-404 artifacts, collapses cache-buster URL explosions, excludes transport endpoints. Reaches blank-value params and param-less endpoints SPAs only call at user-action time.
 - **Bounty prioritization** — every finding is scored (severity + exploitability + asset value + confidence); report leads with a ranked "Hunt these first" list.
 - **Active probing (lead generation)** — 403/401 bypass matrix, open redirect, and error/signature-based injection leads, each auto-confirmed by the exploitation phase that follows.
-- **Modern CVE/technique checks** — Next.js CVE-2025-29927, web cache poisoning + host-header injection, email spoofing posture (SPF/DMARC).
+- **Modern CVE/technique checks** — Next.js middleware/App-Router auth bypasses (CVE-2025-29927 `x-middleware-subrequest`, **CVE-2026-44575/44574** `.rsc`/segment-prefetch + `_rsc` query route confusion — each confirmed by serving protected content unauthenticated), web cache poisoning + host-header injection, email spoofing posture (SPF/DMARC).
 - **Wildcard-DNS-aware enum** — detects wildcard records and drops ghost subdomains.
 - **Favicon mmh3 hash** — Shodan/FOFA pivot to find sibling hosts no DNS brute will surface.
 - **Random User-Agent rotation** — realistic browser UAs rotated per request.
@@ -211,7 +211,7 @@ subdomains (+ altdns permutations) → dns (+ AXFR / SRV) → ports → probe
   → vuln (headers, tls, cors, reflection, misconfig, graphql, CVE, email,
           exposure: .git / actuator / .env, nuclei)
   → active probing (403/401 bypass, open-redirect, CRLF, injection leads,
-                    OAuth, Next.js CVE-2025-29927, cache poisoning)
+                    OAuth, Next.js CVE-2025-29927 + CVE-2026-44575 RSC bypass, cache poisoning)
   → exploitation (SQLi auth-bypass, XSS, command injection — PoC)
   → chaining → CVE intel → validation → parameter attack-surface map
   → bounty prioritization → report
