@@ -1,6 +1,6 @@
 # Venator
 
-A **modular CLI** for authorized recon and non-destructive vulnerability detection, built to compress recon → triage → "what do I test first" into one rate-limited, audit-logged run.
+A **modular CLI** for authorized recon and **autonomous exploitation**, built to compress recon → triage → exploit → confirm into one audit-logged run. It does not just flag bugs — it confirms them with a working PoC, capturing a minimal proof rather than dumping data so the output is report-ready. Items it cannot auto-confirm are reported as leads that state exactly what is left to check.
 
 > ⚠️ Use **only** against assets you own or have **explicit written permission** to test. Gate offensive phases with `--no-exploit` / `--no-chain` / `--no-active` where program rules require passive testing.
 
@@ -58,7 +58,7 @@ Most recon scripts dump a flat list. Venator adds the parts that actually win bo
 - **Validation pass** — re-confirms findings, detects soft-404s (the #1 false-positive source), and de-duplicates.
 - **Catch-all / SPA-aware** — drops soft-404 artifacts, collapses cache-buster URL explosions, excludes transport endpoints. Reaches blank-value params and param-less endpoints SPAs only call at user-action time.
 - **Bounty prioritization** — every finding is scored (severity + exploitability + asset value + confidence); report leads with a ranked "Hunt these first" list.
-- **Active probing (lead generation)** — non-destructive 403/401 bypass matrix, open redirect, and error/signature-based injection leads. No data writes.
+- **Active probing (lead generation)** — 403/401 bypass matrix, open redirect, and error/signature-based injection leads, each auto-confirmed by the exploitation phase that follows.
 - **Modern CVE/technique checks** — Next.js CVE-2025-29927, web cache poisoning + host-header injection, email spoofing posture (SPF/DMARC).
 - **Wildcard-DNS-aware enum** — detects wildcard records and drops ghost subdomains.
 - **Favicon mmh3 hash** — Shodan/FOFA pivot to find sibling hosts no DNS brute will surface.
@@ -101,7 +101,7 @@ pip install -r requirements.txt
 
 **Headless browser (optional):** `pip install playwright` + Chromium — activates the SPA render + DOM-XSS phase; auto-skips if not installed. Disable with `--no-browser`.
 
-**nuclei** runs non-destructive tags only (`ssl,tech,exposure,misconfiguration,cve,takeover,cors`) and excludes `intrusive,dos,fuzz,brute-force,sqli,xss-injection`.
+**nuclei** runs the **full template library** (every tag + severity) with the interactsh OOB collaborator on, so blind bugs self-confirm via callback. Only `dos` templates are excluded by default (they impair the target instead of proving a bug) — add `--nuclei-dos` to include them.
 
 </details>
 
@@ -247,7 +247,7 @@ Both reports lead with run warnings, the ranked hunt list, and findings (priorit
 
 - Only scan assets you **own** or have **explicit written authorization** to test. Stay inside program scope.
 - Keep `audit.jsonl` — it's your evidence of what was done, when, and against what.
-- A finding is a *candidate*. Confirm manually, capture a minimal non-destructive proof, and follow the program's disclosure rules. For subdomain takeover, do **not** claim the resource — document and report it.
+- `confirmed`/EXPLOITED findings are auto-verified and carry a PoC; leads are clearly marked with what is left to check. Always follow the program's disclosure rules. For subdomain takeover, do **not** claim the resource — document and report it.
 - A leaked-secret match is "possible" until verified. **Do not use** a found credential; report it for rotation.
 - The **active phase generates leads, not exploits**. Never escalate to `UNION`/`OR 1=1`/time-based/RCE payloads on live data. Disable with `--no-active` where program rules require passive-only testing.
 - Unauthorized scanning may be illegal in your jurisdiction. You are responsible for how you use this tool.

@@ -22,7 +22,14 @@ from ..vuln import Finding
 from . import dns_records
 
 _ATTR_RE = re.compile(r"""(?:href|src|action|data-src)\s*=\s*['"]([^'"]+)['"]""", re.I)
-_ABS_RE = re.compile(r"https?://[^\s'\"<>)]+", re.I)
+_ABS_RE = re.compile(r"https?://[^\s'\"<>)\\]+", re.I)
+
+# a syntactically valid DNS hostname: labels of [a-z0-9-], ≥2 labels, real-ish TLD.
+# Guards against extraction artifacts (trailing backslash/quote/comma, JS regex
+# fragments) being treated as a "claimable" domain — those produce NXDOMAIN and
+# would otherwise flag the site's OWN domain as unregistered.
+_VALID_HOST = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")
 
 # well-known infra whose absence is never a real takeover lead (standards bodies,
 # doc namespaces, RFC examples, loopback)
@@ -85,9 +92,11 @@ def check(client, service_bases: List[str], scope: Scope, cfg: Config,
                 c = "https:" + c
             if not c.lower().startswith("http"):
                 continue
-            h = (urlparse(c).hostname or "").lower()
+            h = (urlparse(c).hostname or "").lower().rstrip(".")
             if not h or scope.host_in_scope(h):
                 continue
+            if not _VALID_HOST.match(h):
+                continue   # extraction artifact, not a real hostname
             if any(h == s or h.endswith("." + s) for s in _IGNORE_SUFFIX):
                 continue
             ext_refs.setdefault(h, base)

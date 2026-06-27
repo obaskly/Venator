@@ -69,9 +69,10 @@ def _scan_secrets(text: str, source: str, sink: list = None) -> List[Finding]:
                 title=f"Possible {label} in JavaScript",
                 severity=sev, category="secret", target=source,
                 evidence=f"matched `{label}` (masked: {masked}) in {source}",
-                recommendation=("Manually verify the value is live (do NOT use it). "
-                                "If real, rotate it immediately and remove from the "
-                                "client bundle. Report as info disclosure / hardcoded secret."),
+                recommendation=("The secret-validation phase replays this read-only "
+                                "against its issuer API to confirm whether it is LIVE "
+                                "(a confirmed live key is upgraded to a high finding). "
+                                "Rotate it and remove it from the client bundle."),
                 confidence="tentative"))
     return findings
 

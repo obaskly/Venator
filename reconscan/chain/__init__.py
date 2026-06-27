@@ -295,14 +295,18 @@ def _rule_log4shell_pivot(f, ctx):
 
 
 def _rule_hpp_bypass(f, ctx):
-    hpp = _has(f, category="exploit", title_contains="parameter pollution")
+    # only chain when hppinject.py has CONFIRMED the bypass end-to-end — the bare
+    # "backend uses last value" precedence quirk is not, by itself, an injection.
+    hpp = (_has(f, category="exploit", title_contains="hpp waf bypass") or
+           _has(f, category="sqli", title_contains="hpp waf bypass"))
     if hpp:
         return _chain(
             "HTTP Parameter Pollution → WAF bypass → injection", "high", [hpp],
-            "duplicate parameters confuse WAF inspection (WAF checks first value, "
-            "backend uses last) → sneak injection payloads past the filter",
-            "Combine HPP with SQLi/XSS payloads: first param=clean, second param=payload. "
-            "Demonstrate that the WAF passes but the backend evaluates the malicious value.")
+            "duplicate parameters split WAF/backend parsing → the payload in the "
+            "backend-used slot executes while the WAF only sees the clean value",
+            "Confirmed end-to-end: the duplicate-parameter request delivered a live "
+            "payload past the filter (see PoC). Fix by normalizing duplicate parameters "
+            "before both the WAF and the application read them.")
     return None
 
 

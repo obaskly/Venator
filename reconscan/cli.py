@@ -171,10 +171,13 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     help="skip gf-style URL/parameter attack-surface classification")
     ph.add_argument("--no-brokenlinks", action="store_true",
                     help="skip broken-link hijack scan (references to unregistered domains)")
-    ph.add_argument("--validate-secrets", action="store_true",
-                    help="OPT-IN: replay mined secrets read-only against their issuer APIs "
-                         "(GitHub/Slack/Stripe/...) to confirm which are LIVE. Contacts "
-                         "third-party hosts outside scope; off by default.")
+    ph.add_argument("--no-validate-secrets", action="store_true",
+                    help="disable auto-validation of mined secrets (by default the tool "
+                         "replays them read-only against issuer APIs — GitHub/Slack/"
+                         "Stripe/... — to confirm which are LIVE).")
+    ph.add_argument("--nuclei-dos", action="store_true",
+                    help="also run nuclei DoS templates (off by default — they impair "
+                         "the target instead of proving a bug).")
 
     kn = p.add_argument_group("knobs")
     kn.add_argument("--ports", default=None,
@@ -227,6 +230,7 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_fingerprint=not ns.no_fingerprint, do_endpoints=not ns.no_endpoints,
         do_vuln=not ns.no_vuln, use_nuclei=not ns.no_nuclei,
         nuclei_rate=ns.nuclei_rate, nuclei_timeout=ns.nuclei_timeout,
+        nuclei_dos=ns.nuclei_dos,
         use_external=not ns.no_external, dir_brute=not ns.no_dir_brute,
         do_jsintel=not ns.no_jsintel, do_wayback=not ns.no_wayback,
         do_crawl=not ns.no_crawl, use_katana=not ns.no_katana,
@@ -248,7 +252,7 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_subperms=not ns.no_subperms,
         do_urlclass=not ns.no_urlclass,
         do_brokenlinks=not ns.no_brokenlinks,
-        validate_secrets=ns.validate_secrets,
+        validate_secrets=not ns.no_validate_secrets,
         js_max_files=ns.js_max_files, wayback_limit=ns.wayback_limit,
         param_wordlist=ns.param_wordlist,
         ports=ports, dns_wordlist=ns.dns_wordlist, dir_wordlist=ns.dir_wordlist,
@@ -520,6 +524,7 @@ def run(cfg: Config) -> dict:
     pool.shutdown(wait=True)
 
     # ---- active probing (lead generation) ----
+    hpp_leads: list = []
     if cfg.do_active and services:
         findings += run_active(client, scope, services, recon["endpoints"], cfg)
         # WAF/CDN fingerprint (informs evasion-encoded injection fallbacks)
@@ -536,7 +541,8 @@ def run(cfg: Config) -> dict:
                                       for d in ep.get("discovered", [])
                                       if isinstance(d, dict) and "?" in d.get("url", "")],
                             "forms": []}
-            findings += ahpp.exploit(client, _hpp_surface, cfg)
+            hpp_leads = ahpp.exploit(client, _hpp_surface, cfg)
+            findings += hpp_leads
 
     # ---- exploitation (confirm + PoC) ----
     oob = None
@@ -555,6 +561,11 @@ def run(cfg: Config) -> dict:
             if oob and oob.enabled:
                 recon["oob"] = {"provider": oob.backend.name, "domain": oob.domain,
                                 "dns_capable": oob.dns_capable}
+            # autonomously confirm whether HPP precedence lets a payload bypass the
+            # filter (closes the loop instead of telling the user to try it)
+            if cfg.do_hpp and hpp_leads:
+                from .exploit import hppinject
+                findings += hppinject.confirm(client, hpp_leads, cfg)
     finally:
         if oob:
             oob.stop()

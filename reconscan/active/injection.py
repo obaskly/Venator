@@ -74,9 +74,9 @@ def _sqli(client, url, param, baseline_low) -> Optional[Finding]:
                     severity="high", category="sqli", target=_set_param(url, param, "…"),
                     evidence=f"DB error '{sign}' surfaced after appending {probe!r} to "
                              f"'{param}' (absent from baseline)",
-                    recommendation=("MANUAL: confirm with a syntactically balanced "
-                                    "test; do NOT run destructive/UNION payloads on "
-                                    "live data. Parameterize the query. High impact."),
+                    recommendation=("Error-based SQLi lead — the exploitation phase "
+                                    "auto-confirms it with a boolean/error oracle and "
+                                    "attaches a PoC. Parameterize the query. High impact."),
                     confidence="firm")
     return None
 
@@ -96,8 +96,9 @@ def _ssti(client, url, param, baseline_low) -> Optional[Finding]:
                 severity="high", category="ssti", target=_set_param(url, param, expr),
                 evidence=f"template expr {expr!r} rendered (marker {marker!r} -> "
                          f"{rendered!r}, raw payload not echoed)",
-                recommendation=("MANUAL: confirm the template engine and impact "
-                                "(often RCE). Do not run destructive payloads."),
+                recommendation=("Template expression rendered — the exploitation phase "
+                                "auto-confirms the engine and escalates toward RCE. "
+                                "Sandbox/escape all template input."),
                 confidence="firm")
     return None
 
@@ -115,8 +116,10 @@ def _traversal(client, url, param, baseline_low) -> Optional[Finding]:
                     severity="high", category="lfi", target=_set_param(url, param, probe),
                     evidence=f"file signature {sign!r} returned for payload {probe!r} "
                              f"(absent from baseline)",
-                    recommendation=("MANUAL: confirm arbitrary file read scope. Restrict "
-                                    "to an allowlist; never pass user input to file paths."),
+                    recommendation=("File-read confirmed by signature — the exploitation "
+                                    "phase probes the read scope and attaches proof. "
+                                    "Restrict to an allowlist; never pass user input to "
+                                    "file paths."),
                     confidence="firm")
     return None
 
@@ -134,8 +137,9 @@ def _xss_ctx(client, url, param, baseline_low) -> Optional[Finding]:
             title=f"Reflected XSS context (raw HTML metachars) in '{param}'",
             severity="medium", category="xss", target=_set_param(url, param, payload),
             evidence=f"marker reflected with UNescaped <,>: {payload!r} in HTML response",
-            recommendation=("MANUAL: build a context-appropriate XSS PoC and confirm "
-                            "script execution; verify output encoding. Likely XSS."),
+            recommendation=("Raw metachars reflected — the exploitation phase auto-confirms "
+                            "execution with breaking vectors and attaches a PoC URL. Apply "
+                            "context-aware output encoding."),
             confidence="firm")
     return None
 

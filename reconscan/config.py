@@ -62,7 +62,8 @@ class Config:
     do_vuln: bool = True
     use_nuclei: bool = True                        # only if nuclei binary present
     nuclei_rate: Optional[int] = None              # nuclei req/sec; None=derive from delay
-    nuclei_timeout: int = 900                      # max seconds for the nuclei phase
+    nuclei_timeout: int = 1800                     # max seconds for the nuclei phase (full library)
+    nuclei_dos: bool = False                        # include DoS templates too (off: they impair the target)
     use_external: bool = True                      # subfinder/httpx/nmap if present
     # --- elite phases ---
     do_jsintel: bool = True                        # JS endpoint + secret mining
@@ -98,7 +99,7 @@ class Config:
     do_subperms: bool = True                        # altdns-style subdomain permutation engine
     do_urlclass: bool = True                        # gf-style URL/param attack-surface classification
     do_brokenlinks: bool = True                     # broken-link hijack (DNS-only, references to unregistered domains)
-    validate_secrets: bool = False                 # OPT-IN: replay mined secrets read-only against issuer APIs (3rd-party)
+    validate_secrets: bool = True                  # auto-validate mined secrets read-only against issuer APIs (--no-validate-secrets to disable)
 
     # --- knobs ---
     ports: List[int] = field(default_factory=lambda: list(DEFAULT_PORTS))

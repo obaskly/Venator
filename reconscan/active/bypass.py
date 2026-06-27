@@ -153,10 +153,10 @@ def check(client: Client, base_urls: List[str], discovered: List[dict],
                 title="Access-control bypass (403/401 bypassed)",
                 severity="high", category="bypass", target=url,
                 evidence=f"baseline {baseline} -> {code} via {technique} ({test_url})",
-                recommendation=("Manually confirm the bypassed response exposes "
-                                "protected content/functionality, then report the "
-                                "access-control gap. Normalize path handling and "
-                                "stop trusting client-supplied IP/URL headers."),
+                recommendation=("Auto-validated: the bypass returns substantive content "
+                                "absent from the 403/401 baseline, so the control is "
+                                "genuinely bypassed. Normalize path handling and stop "
+                                "trusting client-supplied IP/URL headers."),
                 confidence="firm"))
             log("vuln", f"[high] 403 bypass: {url} via {technique} -> {code}")
     return findings

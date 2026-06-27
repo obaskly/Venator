@@ -47,10 +47,10 @@ def check(client: Client, probe: dict) -> List[Finding]:
                 category="reflection", target=base_url,
                 evidence=f"Canary '{token}' reflected at {test_url}. Context: …{ctx}… "
                          f"(content-type: {ctype}).",
-                recommendation="MANUAL REVIEW: test for XSS by checking output "
-                               "encoding/context; verify whether HTML/JS "
-                               "metacharacters are escaped. Do not assume "
-                               "exploitable without confirmation.",
+                recommendation="Automatic XSS confirmation was attempted and did NOT "
+                               "fire here — the value lands in a non-HTML or escaped "
+                               "context (e.g. JSON/RSC). Kept as a lead: if a sink later "
+                               "renders it unescaped it becomes XSS. Encode on output.",
                 confidence="tentative"))
             log("vuln", f"[reflection] param '{param}' reflected at {base_url}")
             break  # one reflected param is enough to flag for manual review
