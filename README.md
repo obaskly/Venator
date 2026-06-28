@@ -13,6 +13,9 @@ A **modular CLI** for authorized recon and **autonomous exploitation**, built to
 Venator **confirms** vulnerabilities by demonstrating impact, then **chains** them into submittable, high-payout attack paths:
 
 - **Exploitation phase** — auto-detects HTML forms and JSON APIs (no per-site config): SQLi/NoSQLi auth bypass, mass-assignment privilege escalation, reflected XSS execution, OS command injection (`id` output), LFI/path traversal (read-only, hard-signature confirmed), WAF-aware retries (comment-split, base64 wraps, keyword case-mix), JWT weaknesses (alg:none, weak-secret crack), IDOR probing, sensitive-data exposure (Luhn cards, private keys). Each finding is marked `EXPLOITED` with a copy-paste `curl` PoC.
+- **File-upload → RCE / stored XSS** — auto-detects multipart upload forms + endpoints, runs a bypass matrix (extension tricks `.php`/`.phtml`/`.phar`/double-ext/trailing-dot/case/null-byte, content-type spoof, `GIF89a` magic-byte prefix, SVG/HTML), then **confirms by fetching the file back**: an executed arithmetic marker (raw `<?php` absent) proves RCE; a surviving script with a renderable content-type proves stored XSS. Learns the storage location from one benign probe first to stay inside budget.
+- **LLM / AI prompt injection (OWASP LLM01)** — finds chat/assistant/RAG endpoints and confirms instruction override with an oracle a plain echo can't fake: it sends a *lowercase* canary and tells the model to reply UPPERCASED — only a model that follows the injected instruction emits the uppercased token. Follows up to surface a **system-prompt / instruction leak** (LLM07).
+- **Client-side path traversal (CSPT / CSPT2CSRF)** — in the headless browser, injects a `../`-prefixed canary into a query parameter and confirms (execution-based) when the page's own JS concatenates it into the **path** of a same-origin request it fires — the on-site request-forgery primitive that defeats SameSite cookies and CSRF tokens.
 - **Deep class coverage** — broken auth (default creds + user enum), GraphQL (introspection + clairvoyance schema recovery + alias/array batching + resolver injection → RCE/SQLi), stored XSS, CSRF, SSTI→RCE (8 template engines), XXE (in-band file read), HTTP request smuggling (CL.TE/TE.CL), WebSocket CSWSH.
 - **CRLF injection** — confirms only when the uniquely-named injected header appears as a real parsed response header. Effectively zero false positives.
 - **Web cache deception** — proves a route is private, requests it as `…/x.css`, then re-fetches anonymously to confirm a cache leak.
@@ -34,7 +37,7 @@ Venator **confirms** vulnerabilities by demonstrating impact, then **chains** th
 - **Live secret validation** *(opt-in, `--validate-secrets`)* — replays a mined credential read-only against the API that issued it (GitHub `/user`, Slack `auth.test`, Stripe `/v1/balance`, SendGrid, Mailgun, GitLab, Square, Heroku) and reports which secrets are **actually live** (and the principal they authenticate as) vs. revoked — turning a *"possible secret"* into a confirmed critical. Contacts only allowlisted issuer hosts, never the target, with a fresh connection so your session is never leaked; raw secrets stay out of the report.
 - **OAuth / OIDC depth** — OIDC discovery, implicit grant detection, redirect_uri validation weaknesses (error-differential oracle, pre-auth), missing `state` (CSRF).
 - **Many bypasses** — 403/401 engine: 51 path mutations × 29 header spoofs × 9 verbs + method-override. Every injection class carries a WAF-evasion payload set (21 SQL, 17 XSS, 32 cmd, multi-engine SSTI).
-- **Chaining engine** — SQLi bypass→ATO, XSS→session theft→ATO, SSRF→cloud metadata→IAM creds, open-redirect→OAuth token theft, LFI→secret→escalation, JWT-forge→admin, mass-assign→admin, cache+XSS→mass-ATO, prototype-pollution→RCE, race→business-logic abuse, Log4Shell→full compromise, HPP→WAF bypass, CORS+XSS→exfil, and more. Chains score highest in the report.
+- **Chaining engine** — SQLi bypass→ATO, XSS→session theft→ATO, SSRF→cloud metadata→IAM creds, open-redirect→OAuth token theft, LFI→secret→escalation, JWT-forge→admin, mass-assign→admin, cache+XSS→mass-ATO, prototype-pollution→RCE, race→business-logic abuse, Log4Shell→full compromise, HPP→WAF bypass, CORS+XSS→exfil, **CSPT→CSRF (CSPT2CSRF), file-upload→RCE→compromise, LLM-injection→excessive-agency→data exfil, public-bucket→secret→cloud-pivot**, and more. Chains score highest in the report.
 
 </details>
 
@@ -48,6 +51,7 @@ Most recon scripts dump a flat list. Venator adds the parts that actually win bo
 
 - **JS intelligence** — mines JS bundles for hidden API routes and leaked secrets (AWS, Google, Stripe, GitHub, Slack, JWT, private keys…).
 - **Wayback / CDX mining** — keyless historical URL discovery; flags forgotten endpoints (`.env`, `.sql`, `/admin`, `?id=`).
+- **Cloud bucket enumeration** — derives candidate bucket/account names from the target (`acme-prod`, `acme-backups`, `acme-assets`…) and probes **S3 / GCS / Azure Blob** for public listings (confirmed) or existing-but-private buckets (recon lead). Credential-isolated: a fresh connection to allowlisted cloud hosts only, read-only listings, never the target's session.
 - **Subdomain takeover** — dangling-CNAME detection against 17 service fingerprints (S3, GitHub Pages, Heroku, Fastly, Netlify…).
 - **Subdomain permutations** — altdns-style mutation engine derives new candidates from already-known subs (tier/service prefixes + numeric increments), resolves them, and wildcard-filters the hits.
 - **Deep DNS** — attempts an AXFR zone transfer against every authoritative name server (a single misconfig that dumps the whole zone) and enumerates common SRV service records; any host either discloses is folded straight back into the probe/vuln surface.
@@ -59,7 +63,8 @@ Most recon scripts dump a flat list. Venator adds the parts that actually win bo
 - **Catch-all / SPA-aware** — drops soft-404 artifacts, collapses cache-buster URL explosions, excludes transport endpoints. Reaches blank-value params and param-less endpoints SPAs only call at user-action time.
 - **Bounty prioritization** — every finding is scored (severity + exploitability + asset value + confidence); report leads with a ranked "Hunt these first" list.
 - **Active probing (lead generation)** — 403/401 bypass matrix, open redirect, and error/signature-based injection leads, each auto-confirmed by the exploitation phase that follows.
-- **Modern CVE/technique checks** — Next.js middleware/App-Router auth bypasses (CVE-2025-29927 `x-middleware-subrequest`, **CVE-2026-44575/44574** `.rsc`/segment-prefetch + `_rsc` query route confusion — each confirmed by serving protected content unauthenticated), web cache poisoning + host-header injection, email spoofing posture (SPF/DMARC).
+- **Modern CVE/technique checks** — Next.js middleware/App-Router auth bypasses (CVE-2025-29927 `x-middleware-subrequest`, **CVE-2026-44575/44574** `.rsc`/segment-prefetch + `_rsc` query route confusion, plus the **May-2026 proxy/middleware authz batch** — i18n default-locale prefix + path-matcher confusion, each confirmed by serving protected content unauthenticated), web cache poisoning + host-header injection, email spoofing posture (SPF/DMARC). The React Server Components deserialization RCE (CVE-2025-55182, CVSS 10) + RSC DoS chain are covered by the full-library nuclei phase and the CVE-intel pass (version-bound, unsafe to actively confirm).
+- **CORS depth** — beyond arbitrary-origin/`null` reflection: subdomain-trust reflection and prefix-match (`trusted.com.attacker.com`) bypasses, each with a unique attacker canary and credential-aware severity.
 - **Wildcard-DNS-aware enum** — detects wildcard records and drops ghost subdomains.
 - **Favicon mmh3 hash** — Shodan/FOFA pivot to find sibling hosts no DNS brute will surface.
 - **Random User-Agent rotation** — realistic browser UAs rotated per request.
@@ -178,7 +183,7 @@ python3 venator.py example.com --yes --delay 0.2 --nuclei-rate 40 --nuclei-timeo
 
 **Phase toggles**
 
-`--no-subdomains` `--no-dns` `--no-ports` `--no-probe` `--no-fingerprint` `--no-endpoints` `--no-vuln` `--no-nuclei` `--no-external` `--no-dir-brute` `--no-jsintel` `--no-wayback` `--no-takeover` `--no-graphql` `--no-validate` `--no-cve-intel` `--no-active` `--no-exploit` `--no-chain` `--no-apispec` `--no-parammine` `--no-sourcemap` `--no-blindxss` `--no-subperms` `--no-urlclass` `--no-brokenlinks` `--no-adaptive-rate`
+`--no-subdomains` `--no-dns` `--no-ports` `--no-probe` `--no-fingerprint` `--no-endpoints` `--no-vuln` `--no-nuclei` `--no-external` `--no-dir-brute` `--no-jsintel` `--no-wayback` `--no-takeover` `--no-graphql` `--no-validate` `--no-cve-intel` `--no-active` `--no-exploit` `--no-chain` `--no-apispec` `--no-parammine` `--no-sourcemap` `--no-blindxss` `--no-subperms` `--no-urlclass` `--no-brokenlinks` `--no-adaptive-rate` `--no-fileupload` `--no-llminject` `--no-cspt` `--no-cloudassets`
 
 **Knobs**
 | Flag | Default | Meaning |
@@ -206,13 +211,15 @@ The scan auto-detects CPU count and runs independent phases concurrently: subdom
 ```
 subdomains (+ altdns permutations) → dns (+ AXFR / SRV) → ports → probe
   → fingerprint → endpoints
-  → JS intel → recursive crawl (+katana) → headless browser (SPA + DOM-XSS)
-  → wayback → takeover → broken-link hijack → favicon hash
-  → vuln (headers, tls, cors, reflection, misconfig, graphql, CVE, email,
+  → JS intel → recursive crawl (+katana) → headless browser (SPA + DOM-XSS + CSPT)
+  → wayback → takeover → broken-link hijack → cloud-bucket enum → favicon hash
+  → vuln (headers, tls, cors [deep], reflection, misconfig, graphql, CVE, email,
           exposure: .git / actuator / .env, nuclei)
   → active probing (403/401 bypass, open-redirect, CRLF, injection leads,
-                    OAuth, Next.js CVE-2025-29927 + CVE-2026-44575 RSC bypass, cache poisoning)
-  → exploitation (SQLi auth-bypass, XSS, command injection — PoC)
+                    OAuth, Next.js CVE-2025-29927 + CVE-2026-44575 RSC + 2026 proxy-authz
+                    bypass, cache poisoning)
+  → exploitation (SQLi auth-bypass, XSS, command injection, file-upload→RCE,
+                  LLM prompt injection — PoC)
   → chaining → CVE intel → validation → parameter attack-surface map
   → bounty prioritization → report
 ```

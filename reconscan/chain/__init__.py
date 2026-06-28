@@ -236,7 +236,11 @@ def _rule_cache_storedxss(f, ctx):
 
 
 def _rule_cors_xss(f, ctx):
-    cors = _has(f, category="cors")
+    # only an EXPLOITABLE CORS finding chains — a bare `*` wildcard WITHOUT
+    # credentials (info severity) can't steal authenticated data, so it must not
+    # produce a "cross-origin data theft" chain (over-claim guard).
+    cors = next((c for c in f if c.category == "cors"
+                 and c.severity in ("critical", "high", "medium")), None)
     x = _has(f, category="exploit", title_contains="xss") or _has(f, category="xss")
     if cors and x:
         return _chain(
@@ -310,6 +314,46 @@ def _rule_hpp_bypass(f, ctx):
     return None
 
 
+def _rule_cspt_csrf(f, ctx):
+    c = _has(f, category="exploit", title_contains="client-side path traversal")
+    if c:
+        return _chain(
+            "CSPT → on-site request forgery (CSPT2CSRF)", "high", [c],
+            "attacker-controlled query input steers an authenticated same-origin "
+            "request path → reach a state-changing endpoint (DELETE/PATCH/POST) with "
+            "the victim's cookies, bypassing SameSite and CSRF tokens",
+            "Confirmed CSPT primitive. Find a state-changing sink reachable via the "
+            "traversed path (e.g. delete MFA / change email) for full CSRF impact.")
+    return None
+
+
+def _rule_llm_agency(f, ctx):
+    l = _has(f, category="exploit", title_contains="prompt injection")
+    if l:
+        return _chain(
+            "LLM prompt injection → excessive agency → data exfiltration / IDOR",
+            "high", [l],
+            "override the model's instructions → coerce its connected tools/APIs out of "
+            "policy (read other users' data, trigger privileged actions) or exfiltrate "
+            "secrets embedded in the system prompt",
+            "Confirmed instruction override. Map the model's tool/data scope and show one "
+            "cross-user read or unauthorized action for full impact (OWASP LLM01→LLM06).")
+    return None
+
+
+def _rule_cloud_bucket(f, ctx):
+    b = _has(f, category="exploit", title_contains="bucket lists objects")
+    if b:
+        return _chain(
+            "Public cloud bucket → source/secret disclosure → deeper compromise",
+            "critical", [b],
+            "list + read a world-readable bucket named after the target → harvest source, "
+            "backups, .env / IAM keys → authenticate to cloud APIs and pivot",
+            "Confirmed public listing. Enumerate for credentials/backups (read-only) and "
+            "report the exposure; if keys are found, report them for rotation — do not use.")
+    return None
+
+
 _RULES: List[Callable] = [
     _rule_sqli_ato, _rule_jwt_forge, _rule_massassign, _rule_sqli_extract,
     _rule_rce, _rule_xxe, _rule_smuggling, _rule_xss_ato, _rule_ssrf_cloud,
@@ -317,6 +361,7 @@ _RULES: List[Callable] = [
     _rule_nextjs_admin, _rule_takeover_oauth, _rule_cache_storedxss,
     _rule_cors_xss, _rule_proto_rce, _rule_race_business,
     _rule_log4shell_pivot, _rule_hpp_bypass,
+    _rule_cspt_csrf, _rule_llm_agency, _rule_cloud_bucket,
 ]
 
 

@@ -24,6 +24,13 @@ from .utils import RateLimiter, Scope, ScopeError, log
 
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 
+# Cloud object-storage hosts the bucket-enumeration phase is allowed to contact.
+# These are NOT the target; like external_request, calls are credential-isolated
+# (a fresh connection, never the target session) so the target's auth never leaks.
+CLOUD_HOST_SUFFIXES = ("amazonaws.com", "storage.googleapis.com",
+                       "blob.core.windows.net", "r2.dev",
+                       "digitaloceanspaces.com", "aliyuncs.com")
+
 
 @dataclass
 class Response:
@@ -442,3 +449,82 @@ class Client:
             return Response(url, url, 0, {}, "", 0.0, [], error=type(e).__name__)
         finally:
             self.audit.record("POST", url, phase=phase, status=status)
+
+    def cloud_request(self, method: str, url: str, *, phase: str = "cloud-assets",
+                      body_limit: int = 65_536) -> Response:
+        """A single read-only request to a CLOUD object-store host (S3/GCS/Azure/
+        R2/Spaces) — the bucket-enumeration probe. Like external_request it leaves
+        the target scope guard on purpose, but only to an allowlisted cloud host,
+        with a FRESH connection (target auth never leaks), rate-limited, budget-
+        capped, TLS-verified and audited."""
+        host = (urlparse(url).hostname or "").lower()
+        if not any(host == s or host.endswith("." + s) for s in CLOUD_HOST_SUFFIXES):
+            self.audit.record(method, url, phase=phase, note="CLOUD_NOT_ALLOWLISTED")
+            return Response(url, url, 0, {}, "", 0.0, [], error="not_cloud_host")
+        if self.over_budget():
+            return Response(url, url, 0, {}, "", 0.0, [], error="budget_exceeded")
+        self._req_count += 1
+        self.limiter.wait()
+        h = {"User-Agent": self.cfg.user_agent, "Accept": "*/*"}
+        status = None
+        try:
+            resp = requests.request(method, url, headers=h, timeout=self.cfg.timeout,
+                                    allow_redirects=True, verify=True, stream=True)
+            raw = resp.raw.read(body_limit, decode_content=True)
+            text = raw.decode(resp.encoding or "utf-8", errors="replace")
+            status = resp.status_code
+            return Response(url, resp.url, status,
+                            {k.lower(): v for k, v in resp.headers.items()},
+                            text, resp.elapsed.total_seconds(), [])
+        except requests.RequestException as e:
+            return Response(url, url, 0, {}, "", 0.0, [], error=type(e).__name__)
+        finally:
+            self.audit.record(method, url, phase=phase, status=status, note="CLOUD_PROBE")
+
+    def post_multipart(self, url: str, fields: dict, files: list,
+                       phase: str = "exploit", method: str = "POST",
+                       extra_headers: Optional[dict] = None) -> Response:
+        """POST a multipart/form-data body — the file-upload probe.
+
+        `fields` are normal form fields (name -> str). `files` is a list of
+        (field_name, filename, content_bytes, content_type) tuples. requests sets
+        the multipart boundary + Content-Type automatically. Scope-gated,
+        rate-limited, budget-capped, audited like every other write."""
+        try:
+            self.scope.assert_url(url)
+        except ScopeError as e:
+            self.audit.record(method, url, phase=phase, note="BLOCKED_OUT_OF_SCOPE")
+            log("err", str(e), detail=True)
+            return Response(url, url, 0, {}, "", 0.0, [], error="out_of_scope")
+        if self.over_budget():
+            return Response(url, url, 0, {}, "", 0.0, [], error="budget_exceeded")
+        self._req_count += 1
+        self.limiter.wait()
+        multipart = {}
+        for fname, filename, content, ctype in files:
+            if isinstance(content, str):
+                content = content.encode("utf-8", errors="replace")
+            multipart[fname] = (filename, content, ctype)
+        headers = dict(extra_headers) if extra_headers else {}
+        if self.cfg.rotate_ua and "User-Agent" not in headers:
+            headers["User-Agent"] = random.choice(USER_AGENTS)
+        status = None
+        try:
+            resp = self.session.request(
+                method, url, data=fields or None, files=multipart,
+                timeout=self.cfg.timeout, allow_redirects=True,
+                verify=self.cfg.verify_tls, headers=headers or None, stream=True)
+            raw = resp.raw.read(2_000_000, decode_content=True)
+            text = raw.decode(resp.encoding or "utf-8", errors="replace")
+            status = resp.status_code
+            self._throttle_feedback(status, resp.headers)
+            fin = resp.url
+            return Response(url, fin, status,
+                            {k.lower(): v for k, v in resp.headers.items()},
+                            text, resp.elapsed.total_seconds(),
+                            [r.headers.get("location", "") for r in resp.history],
+                            final_host_in_scope=self.scope.url_in_scope(fin))
+        except requests.RequestException as e:
+            return Response(url, url, 0, {}, "", 0.0, [], error=type(e).__name__)
+        finally:
+            self.audit.record(method, url, phase=phase, status=status)

@@ -95,6 +95,10 @@ class Config:
     do_log4shell: bool = True                      # Log4Shell JNDI injection (OOB only)
     do_headerinject: bool = True                   # header injection (XSS/SQLi/SSTI)
     do_hpp: bool = True                            # HTTP Parameter Pollution
+    do_fileupload: bool = True                     # file-upload exploitation (RCE / stored XSS)
+    do_llminject: bool = True                      # LLM / AI prompt injection
+    do_cspt: bool = True                           # client-side path traversal (browser phase)
+    do_cloudassets: bool = True                    # cloud storage bucket enumeration (S3/GCS/Azure/R2)
     do_timesqli: bool = True                       # time-based blind SQLi (slow; auto-skipped when in-band confirms)
     do_subperms: bool = True                        # altdns-style subdomain permutation engine
     do_urlclass: bool = True                        # gf-style URL/param attack-surface classification

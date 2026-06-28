@@ -120,6 +120,7 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
     max_pages = max(1, getattr(cfg, "browser_max_pages", 20))
     findings: List[Finding] = []
     captured: set = set()
+    req_log: List[str] = []     # every in-scope request URL, in order (for CSPT)
     rendered = 0
     domxss_tests = 0
     post_links: List[str] = []
@@ -146,6 +147,7 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
                 host = urlparse(req.url).netloc
                 if scope.host_in_scope(host):
                     rt = req.resource_type
+                    req_log.append(req.url)        # ordered log for the CSPT pass
                     if rt in _CAPTURE_TYPES and not _is_static(req.url):
                         captured.add(req.url)
                     elif "?" in req.url and rt not in _STATIC_RT:
@@ -258,6 +260,36 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
                     findings.append(finding)
                 if spacing:
                     time.sleep(spacing)
+
+            # --- pass 5: client-side path traversal (CSPT / OSRF) ---
+            # Inject a ../-prefixed canary into a query param; if the page's own JS
+            # concatenates it into a PATH and fires a same-origin request, the canary
+            # lands in that request's path — execution-confirmed CSPT (defeats
+            # SameSite cookies, chainable to CSRF). The canary is placed only in a
+            # query param, so a plain reflection can never put it in a path → no FP.
+            if getattr(cfg, "do_cspt", True):
+                cspt_seen: set = set()
+                cspt_targets = [u for u in dedup_keep_order(param_urls) if "?" in u][:max_pages]
+                for url in cspt_targets:
+                    bpath = urlparse(url).path
+                    if bpath in cspt_seen or not scope.url_in_scope(url):
+                        continue
+                    names = [k for k, _ in parse_qsl(urlparse(url).query, keep_blank_values=True)]
+                    for name in names[:2]:
+                        canary = "cspt" + _tok(6)
+                        probe = _set_param(url, name, "../../../" + canary)
+                        if not scope.url_in_scope(probe):
+                            continue
+                        mark = len(req_log)
+                        if not _goto(probe):
+                            continue
+                        finding = _cspt_check(req_log[mark:], canary, probe, name, scope)
+                        if finding:
+                            cspt_seen.add(bpath)
+                            findings.append(finding)
+                            break
+                    if spacing:
+                        time.sleep(spacing)
 
             ctx.close()
             browser.close()
@@ -417,6 +449,32 @@ def _clientpp_finding(page, scope, base_url: str, audit):
                 confidence="confirmed",
                 poc=f"open in a browser: {target}")
     return None
+
+
+def _cspt_check(reqs: List[str], canary: str, probe: str, name: str, scope):
+    """Did our query-param canary reach the PATH of a same-origin request?"""
+    for r in reqs:
+        pr = urlparse(r)
+        if scope.host_in_scope(pr.netloc) and canary in (pr.path or ""):
+            return _cspt_finding(probe, r, name)
+    return None
+
+
+def _cspt_finding(probe_url: str, hit_req: str, name: str) -> Finding:
+    return Finding(
+        title="Client-side path traversal (CSPT / on-site request forgery) confirmed",
+        severity="high", category="exploit", target=probe_url,
+        evidence=(f"A ../-prefixed canary placed in the `{name}` query parameter was "
+                  f"concatenated by the page's JavaScript into the PATH of a same-origin "
+                  f"request it then fired ({hit_req}). Attacker-controlled query input "
+                  "steers an authenticated same-origin request path — this bypasses "
+                  "SameSite cookies and is chainable to CSRF (CSPT2CSRF). "
+                  "Execution-confirmed in a real browser."),
+        recommendation=("Anchor/validate the fetched path against an allowlist; never "
+                        "concatenate user input into a request path. Reject ../ and "
+                        "absolute-path segments before building the URL."),
+        confidence="confirmed",
+        poc=f"# open while authenticated; observe the request to:\n# {hit_req}\n# source URL: {probe_url}")
 
 
 def _dedup_forms(forms: List[dict]) -> List[dict]:

@@ -20,7 +20,7 @@ from .utils import Scope, log, dedup_keep_order, is_catch_all_artifact, is_logou
 from .oob import OOBClient
 from .recon import dns_records, subdomains, ports as portscan, probe as prober, \
     fingerprint as fp, endpoints as endp, jsintel, wayback, takeover, favicon, \
-    apispec, crawler, brokenlinks, urlclass
+    apispec, crawler, brokenlinks, urlclass, cloudassets
 from .vuln import headers as vheaders, tls as vtls, misconfig as vmisc, \
     cors as vcors, reflection as vrefl, cve as vcve, nuclei as vnuclei, \
     graphql as vgraphql, nextjs as vnextjs, cache as vcache, email_sec as vemail, \
@@ -163,6 +163,14 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     help="skip header injection (XSS/SQLi/SSTI via headers)")
     ph.add_argument("--no-hpp", action="store_true",
                     help="skip HTTP Parameter Pollution detection")
+    ph.add_argument("--no-fileupload", action="store_true",
+                    help="skip file-upload exploitation (RCE / stored XSS)")
+    ph.add_argument("--no-llminject", action="store_true",
+                    help="skip LLM / AI prompt-injection testing")
+    ph.add_argument("--no-cspt", action="store_true",
+                    help="skip client-side path traversal (browser phase)")
+    ph.add_argument("--no-cloudassets", action="store_true",
+                    help="skip cloud storage bucket enumeration (S3/GCS/Azure/R2)")
     ph.add_argument("--no-timesqli", action="store_true",
                     help="skip time-based blind SQLi (auto-skipped when in-band confirms)")
     ph.add_argument("--no-subperms", action="store_true",
@@ -248,6 +256,10 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_log4shell=not ns.no_log4shell,
         do_headerinject=not ns.no_headerinject,
         do_hpp=not ns.no_hpp,
+        do_fileupload=not ns.no_fileupload,
+        do_llminject=not ns.no_llminject,
+        do_cspt=not ns.no_cspt,
+        do_cloudassets=not ns.no_cloudassets,
         do_timesqli=not ns.no_timesqli,
         do_subperms=not ns.no_subperms,
         do_urlclass=not ns.no_urlclass,
@@ -480,6 +492,11 @@ def run(cfg: Config) -> dict:
     # broken-link hijack — references to UNREGISTERED external domains (DNS-only)
     if cfg.do_brokenlinks and service_bases:
         findings += brokenlinks.check(client, service_bases, scope, cfg, audit)
+
+    # cloud bucket enumeration — S3/GCS/Azure named after the target (credential-
+    # isolated, allowlisted cloud hosts only; skips IP/localhost targets)
+    if cfg.do_cloudassets:
+        findings += cloudassets.check(client, cfg)
 
     # ---- vuln (detection only), scoped to in-scope services ----
     if cfg.do_vuln:
