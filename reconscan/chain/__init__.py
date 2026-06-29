@@ -131,6 +131,7 @@ def _rule_openredirect_oauth(f, ctx):
 def _rule_rce(f, ctx):
     r = (_has(f, category="exploit", title_contains="remote code execution") or
          _has(f, category="exploit", title_contains="command injection") or
+         _has(f, category="exploit", title_contains="(rce)") or
          _has(f, category="exploit", title_contains="ssti →"))
     if r:
         return _chain(
@@ -341,6 +342,32 @@ def _rule_llm_agency(f, ctx):
     return None
 
 
+def _rule_buslogic_financial(f, ctx):
+    b = _has(f, category="exploit", title_contains="business-logic")
+    if b:
+        return _chain(
+            "Business-logic flaw → financial fraud / unauthorized value", "high", [b],
+            "tamper a price/quantity (negative or attacker-set) or assign a server-"
+            "authoritative money field → buy for nothing, mint balance, place a "
+            "negative-total order, or transfer funds you don't have",
+            "Drive the flaw through checkout/withdrawal to realize the value and "
+            "quantify the per-request dollar impact for the report.")
+    return None
+
+
+def _rule_authreset_ato(f, ctx):
+    a = (_has(f, category="exploit", title_contains="reset") or
+         _has(f, category="exploit", title_contains="otp-code verification"))
+    if a:
+        return _chain(
+            "Password-reset / OTP weakness → account takeover", "critical", [a],
+            "leak or poison the reset token, or brute the unthrottled OTP → seize an "
+            "arbitrary account without its password → escalate to an admin account",
+            "Take over a test account end-to-end; pair with admin-only functionality "
+            "for maximum severity and payout.")
+    return None
+
+
 def _rule_cloud_bucket(f, ctx):
     b = _has(f, category="exploit", title_contains="bucket lists objects")
     if b:
@@ -362,6 +389,7 @@ _RULES: List[Callable] = [
     _rule_cors_xss, _rule_proto_rce, _rule_race_business,
     _rule_log4shell_pivot, _rule_hpp_bypass,
     _rule_cspt_csrf, _rule_llm_agency, _rule_cloud_bucket,
+    _rule_buslogic_financial, _rule_authreset_ato,
 ]
 
 

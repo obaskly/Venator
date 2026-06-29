@@ -25,7 +25,7 @@ from .vuln import headers as vheaders, tls as vtls, misconfig as vmisc, \
     cors as vcors, reflection as vrefl, cve as vcve, nuclei as vnuclei, \
     graphql as vgraphql, nextjs as vnextjs, cache as vcache, email_sec as vemail, \
     dataleak as vdataleak, smuggling as vsmuggling, wcd as vwcd, waf as vwaf, \
-    exposure as vexposure, Finding
+    exposure as vexposure, techpacks as vtechpacks, Finding
 from .intel import cve as cveintel
 from .active import run_active
 from .exploit import run_exploit
@@ -167,6 +167,12 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
                     help="skip file-upload exploitation (RCE / stored XSS)")
     ph.add_argument("--no-llminject", action="store_true",
                     help="skip LLM / AI prompt-injection testing")
+    ph.add_argument("--no-authreset", action="store_true",
+                    help="skip password-reset / OTP / 2FA logic checks")
+    ph.add_argument("--no-buslogic", action="store_true",
+                    help="skip business-logic checks (price/quantity tampering, monetary mass-assign)")
+    ph.add_argument("--no-techpacks", action="store_true",
+                    help="skip technology-specific exploit packs (WordPress/Jenkins/Jira/GitLab)")
     ph.add_argument("--no-cspt", action="store_true",
                     help="skip client-side path traversal (browser phase)")
     ph.add_argument("--no-cloudassets", action="store_true",
@@ -258,6 +264,9 @@ def build_config(ns: argparse.Namespace) -> Config:
         do_hpp=not ns.no_hpp,
         do_fileupload=not ns.no_fileupload,
         do_llminject=not ns.no_llminject,
+        do_authreset=not ns.no_authreset,
+        do_buslogic=not ns.no_buslogic,
+        do_techpacks=not ns.no_techpacks,
         do_cspt=not ns.no_cspt,
         do_cloudassets=not ns.no_cloudassets,
         do_timesqli=not ns.no_timesqli,
@@ -519,6 +528,11 @@ def run(cfg: Config) -> dict:
 
         for fpr in recon["fingerprints"]:
             findings += vcve.check(fpr)
+
+        # technology-specific exploit packs (WP/Jenkins/Jira/GitLab confirmed checks
+        # + version→CVE/KEV cross-ref) — uses fingerprints to target each stack
+        if getattr(cfg, "do_techpacks", True):
+            findings += vtechpacks.check(client, service_bases, recon["fingerprints"], cfg)
 
         if cfg.do_graphql:
             findings += vgraphql.check(client, service_bases)

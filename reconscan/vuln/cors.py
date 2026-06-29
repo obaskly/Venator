@@ -58,8 +58,11 @@ def check(client: Client, probe: dict) -> List[Finding]:
          f"startswith() validation bug; the attacker fully controls {canary}.com"),
     ]
 
+    arb_acao = arb_acac = None
     for origin, label, sev_creds, sev_plain, desc in shapes:
         acao, acac = _probe(client, url, origin)
+        if origin == shapes[0][0]:        # remember arbitrary-origin result for the
+            arb_acao, arb_acac = acao, acac   # wildcard check below (no re-request)
         if acao == origin:
             findings.append(Finding(
                 title=f"CORS {label} reflected" + (" with credentials" if acac else ""),
@@ -75,8 +78,8 @@ def check(client: Client, probe: dict) -> List[Finding]:
                 confidence="firm",
                 poc=f"curl -s -i -H 'Origin: {origin}' '{url}'"))
 
-    # wildcard ACAO (independent of the reflection shapes above)
-    acao0, acac0 = _probe(client, url, f"https://{canary}.com")
+    # wildcard ACAO — reuse the arbitrary-origin probe (same Origin) above
+    acao0, acac0 = arb_acao, arb_acac
     if acao0 == "*" and acac0:
         findings.append(Finding(
             title="CORS wildcard with credentials", severity="high",

@@ -97,6 +97,9 @@ class Config:
     do_hpp: bool = True                            # HTTP Parameter Pollution
     do_fileupload: bool = True                     # file-upload exploitation (RCE / stored XSS)
     do_llminject: bool = True                      # LLM / AI prompt injection
+    do_authreset: bool = True                      # password-reset / OTP / 2FA logic flaws
+    do_buslogic: bool = True                       # business-logic (price/quantity tampering, monetary mass-assign)
+    do_techpacks: bool = True                      # technology-specific exploit packs (WP/Jenkins/Jira/GitLab + version-CVE/KEV)
     do_cspt: bool = True                           # client-side path traversal (browser phase)
     do_cloudassets: bool = True                    # cloud storage bucket enumeration (S3/GCS/Azure/R2)
     do_timesqli: bool = True                       # time-based blind SQLi (slow; auto-skipped when in-band confirms)

@@ -1,14 +1,21 @@
-"""HTTP request smuggling detection (CL.TE / TE.CL) via response-timing.
+"""HTTP request smuggling / desync detection (CL.TE / TE.CL / TE-obfuscation /
+H2C upgrade) via response-timing + protocol-upgrade signals.
 
 Uses the safe timing technique: a desync-crafted request makes the back-end wait
 for data that never arrives, so a vulnerable chain delays the response. We only
 send the detection probe on our own connection (no second 'victim' request, so we
 never poison another user's traffic) and compare timing to a normal request.
 
+Also probes cleartext HTTP/2 (h2c) upgrade: an origin that answers `101 Switching
+Protocols` to an `Upgrade: h2c` over HTTP/1.1 behind a front-end that blindly
+forwards the upgrade is the modern h2c-smuggling primitive (tunnel an HTTP/2
+stream past the edge to reach internal-only routes).
+
 Detection only — a hit is a candidate to confirm manually with Burp/Turbo Intruder.
 """
 from __future__ import annotations
 
+import base64
 import socket
 import ssl
 import time
@@ -53,8 +60,41 @@ def _tecl(host: str) -> bytes:
             f"Connection: keep-alive\r\n\r\n{body}").encode()
 
 
+def _te_obfuscated(host: str) -> bytes:
+    """TE-header obfuscation: a tab/space-prefixed value many front-ends fail to
+    recognise as chunked while the back-end still honours it (classic desync)."""
+    body = "1\r\nA\r\nX"
+    return (f"POST / HTTP/1.1\r\nHost: {host}\r\n"
+            f"Transfer-Encoding:\tchunked\r\nContent-Length: {len(body)}\r\n"
+            f"Connection: keep-alive\r\n\r\n{body}").encode()
+
+
 def _normal(host: str) -> bytes:
     return (f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").encode()
+
+
+def _h2c(host: str) -> bytes:
+    """Cleartext-HTTP/2 upgrade request (RFC 7540 §3.2)."""
+    settings = base64.urlsafe_b64encode(b"\x00\x00\x00\x04\x00\x00\x00\x00").decode().rstrip("=")
+    return (f"GET / HTTP/1.1\r\nHost: {host}\r\n"
+            f"Connection: Upgrade, HTTP2-Settings\r\n"
+            f"Upgrade: h2c\r\nHTTP2-Settings: {settings}\r\n\r\n").encode()
+
+
+def _raw_response(host: str, port: int, tls: bool, payload: bytes,
+                  timeout: float, nbytes: int = 320) -> str:
+    """Send raw bytes, return the first `nbytes` of the response as text."""
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        if tls:
+            sock = ssl._create_unverified_context().wrap_socket(sock, server_hostname=host)
+        sock.settimeout(timeout)
+        sock.sendall(payload)
+        data = sock.recv(nbytes)
+        sock.close()
+        return data.decode("latin-1", "replace")
+    except Exception:
+        return ""
 
 
 def check(client: Client, service_bases: List[str], cfg: Config) -> List[Finding]:
@@ -72,10 +112,32 @@ def check(client: Client, service_bases: List[str], cfg: Config) -> List[Finding
         seen.add(host)
         port = pr.port or (443 if pr.scheme == "https" else 80)
         tls = pr.scheme == "https"
+
+        # --- h2c upgrade probe (one extra request) ---
+        resp = _raw_response(host, port, tls, _h2c(host), to)
+        client._req_count += 1
+        client.audit.record("RAW", f"{base} [h2c upgrade probe]",
+                            phase="vuln", tool="smuggling")
+        line1 = resp.split("\r\n", 1)[0].lower()
+        if "101" in line1 and "switching" in line1 and "h2c" in resp.lower():
+            findings.append(Finding(
+                title="Cleartext HTTP/2 (h2c) upgrade accepted — smuggling candidate",
+                severity="high", category="smuggling", target=base,
+                evidence=("the origin answered '101 Switching Protocols' to an "
+                          "Upgrade: h2c request. If a front-end proxy forwards this "
+                          "upgrade, an attacker tunnels a raw HTTP/2 stream past the "
+                          "edge to reach internal/unauthenticated routes. Candidate — "
+                          "confirm the front-end forwards the upgrade."),
+                recommendation=("Strip/deny the Upgrade: h2c header at the edge; never "
+                                "forward client-initiated protocol upgrades to the origin."),
+                confidence="tentative"))
+            log("vuln", f"[high] h2c upgrade accepted @ {base}")
+
         baseline = _send_raw(host, port, tls, _normal(host), to)
         if baseline < 0:
             continue
-        for name, builder in (("CL.TE", _clte), ("TE.CL", _tecl)):
+        for name, builder in (("CL.TE", _clte), ("TE.CL", _tecl),
+                              ("TE-obfuscation", _te_obfuscated)):
             t = _send_raw(host, port, tls, builder(host), to)
             client._req_count += 1
             client.audit.record("RAW", f"{base} [{name} smuggling probe]",

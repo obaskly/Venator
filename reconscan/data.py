@@ -234,6 +234,14 @@ SECRET_PATTERNS = [
     ("JWT (HS/RS) token", "low", re.compile(r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b")),
     ("Square Access Token", "high", re.compile(r"\b(sq0atp-[0-9A-Za-z\-_]{22})\b")),
     ("Heroku API Key", "high", re.compile(r"(?i)heroku.{0,20}?['\"]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['\"]")),
+    ("npm Access Token", "critical", re.compile(r"\b(npm_[A-Za-z0-9]{36})\b")),
+    ("DigitalOcean Token", "critical", re.compile(r"\b(do[oprt]_v1_[a-f0-9]{64})\b")),
+    ("OpenAI API Key", "high", re.compile(r"\b(sk-(?:proj-)?[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{40,})\b")),
+    ("Telegram Bot Token", "medium", re.compile(r"\b([0-9]{8,10}:AA[A-Za-z0-9_-]{32,})\b")),
+    ("Figma Token", "medium", re.compile(r"\b(figd_[A-Za-z0-9_-]{40,})\b")),
+    ("Postman API Key", "high", re.compile(r"\b(PMAK-[a-f0-9]{24}-[a-f0-9]{34})\b")),
+    ("Cloudflare API Token", "high", re.compile(r"(?i)cloudflare.{0,24}?['\"]([A-Za-z0-9_-]{40})['\"]")),
+    ("Shopify Access Token", "critical", re.compile(r"\b(shpat_[a-fA-F0-9]{32})\b")),
     ("Generic API key assignment", "medium", re.compile(r"(?i)(?:api[_-]?key|apikey|secret|token|passwd|password)['\"]?\s*[:=]\s*['\"]([0-9a-zA-Z\-_]{16,64})['\"]")),
 ]
 
@@ -242,6 +250,49 @@ SECRET_PATTERNS = [
 SECRET_PLACEHOLDERS = [
     "your_", "example", "xxxx", "placeholder", "changeme", "dummy", "test",
     "sample", "<", "{{", "}}", "0000000000", "1234567890", "abcdef", "redacted",
+]
+
+# --------------------------------------------------- CISA-KEV / in-the-wild CVEs
+# A curated set of CVEs on CISA's Known Exploited Vulnerabilities catalogue (i.e.
+# confirmed exploited in the wild) — the scorer bumps any finding referencing one
+# so the report leads with what attackers are ACTUALLY using, not just high CVSS.
+KEV_CVES = {
+    # web frameworks / app servers
+    "CVE-2021-44228", "CVE-2021-45046",                 # Log4Shell
+    "CVE-2022-22965", "CVE-2022-22963",                 # Spring4Shell / Spring Cloud
+    "CVE-2017-5638", "CVE-2018-11776", "CVE-2023-50164",  # Apache Struts
+    "CVE-2021-41773", "CVE-2021-42013",                 # Apache path traversal/RCE
+    "CVE-2025-29927",                                   # Next.js middleware auth bypass
+    # Atlassian
+    "CVE-2022-26134", "CVE-2023-22515", "CVE-2023-22518", "CVE-2021-26084",  # Confluence
+    "CVE-2019-11581", "CVE-2022-0540",                  # Jira
+    # GitLab / Jenkins / VCS+CI
+    "CVE-2021-22205", "CVE-2023-7028",                  # GitLab RCE / account takeover
+    "CVE-2024-23897", "CVE-2018-1000861",               # Jenkins
+    # edge / VPN / file transfer (mass-exploited)
+    "CVE-2023-3519", "CVE-2019-19781", "CVE-2023-4966",  # Citrix NetScaler
+    "CVE-2023-46805", "CVE-2024-21887", "CVE-2025-0282", "CVE-2025-22457",  # Ivanti
+    "CVE-2022-40684", "CVE-2023-27997", "CVE-2024-21762",  # Fortinet
+    "CVE-2023-34362", "CVE-2024-5806",                  # MOVEit Transfer
+    "CVE-2023-27350",                                   # PaperCut
+    "CVE-2023-20198", "CVE-2023-20273",                 # Cisco IOS XE
+    # Microsoft Exchange (ProxyLogon / ProxyShell)
+    "CVE-2021-26855", "CVE-2021-34473", "CVE-2021-34523", "CVE-2021-31207",
+    # PHP / misc
+    "CVE-2024-4577", "CVE-2017-9841",                   # PHP-CGI argument injection / PHPUnit
+}
+
+# --------------------------------------------------- tech → version-CVE heuristics
+# (product, max_vulnerable_version, cve, severity, note). A detected product whose
+# version is BELOW max_vulnerable is flagged (tentative — confirm the exact build).
+# CVEs that are also in KEV_CVES additionally get the in-the-wild priority bump.
+TECH_CVES = [
+    ("jira",       "8.4.0",  "CVE-2019-11581", "critical", "template injection → RCE"),
+    ("confluence", "7.18.1", "CVE-2022-26134", "critical", "unauth OGNL injection → RCE (KEV)"),
+    ("confluence", "8.5.4",  "CVE-2023-22518", "critical", "improper authorization → takeover (KEV)"),
+    ("gitlab",     "16.7.2", "CVE-2023-7028",  "critical", "password reset to arbitrary email → ATO (KEV)"),
+    ("gitlab",     "13.10.3", "CVE-2021-22205", "critical", "unauth ExifTool RCE (KEV)"),
+    ("jenkins",    "2.442",  "CVE-2024-23897", "high",     "CLI arbitrary file read (KEV)"),
 ]
 
 # Regexes for endpoints/paths referenced in JS (relative + absolute API paths).

@@ -7,10 +7,14 @@ leads with a ranked 'hunt these first' list instead of a flat dump.
 """
 from __future__ import annotations
 
+import re
 from typing import List, Optional, Set
 from urllib.parse import urlparse
 
+from .data import KEV_CVES
 from .vuln import Finding
+
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
 
 # finding categories that gain priority when they sit on a gf-classified
 # high-value parameter (see recon/urlclass.py)
@@ -63,6 +67,13 @@ def _asset_value(f: Finding) -> int:
     return min(25, 6 * sum(1 for w in _HOT_WORDS if w in blob))
 
 
+def _kev_bonus(f: Finding) -> int:
+    """In-the-wild signal: a finding referencing a CISA-KEV CVE is what attackers
+    are actively exploiting — bump it so the hunt list leads with those."""
+    cves = {m.upper() for m in _CVE_RE.findall(f.title + " " + f.evidence)}
+    return 30 if cves & KEV_CVES else 0
+
+
 def _on_hot_target(target: str, hot_targets: Set[str]) -> bool:
     if not hot_targets:
         return False
@@ -78,6 +89,7 @@ def score_finding(f: Finding, hot_targets: Optional[Set[str]] = None) -> int:
     s += _CATEGORY_BONUS.get(f.category, 0)
     s += _exploitability(f)
     s += _asset_value(f)
+    s += _kev_bonus(f)
     if f.validated is True:
         s += 8
     # gf-classified high-value parameter on this URL -> bump it up the hunt list

