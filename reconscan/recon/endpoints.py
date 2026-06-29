@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import re
+import secrets
 from typing import List, Set
 from urllib.parse import urljoin, urlparse
 
@@ -74,17 +75,30 @@ def discover(client: Client, base_url: str, cfg: Config) -> dict:
         log("info", f"directory probe ({len(words)} paths)")
         found: List[dict] = []
 
+        # catch-all baseline: a guaranteed-missing path. On an SPA / catch-all host
+        # that answers 200+index for EVERY path, every word would otherwise look
+        # "discovered" and flood the surface (and waste budget) — so 200s that are
+        # size-identical to this not-found baseline are dropped. Real endpoints
+        # differ in status or body size, so this never hides a true discovery.
+        cax = client.get(urljoin(base_url, f"/{secrets.token_hex(12)}-nf"),
+                         phase="endpoints", allow_redirects=False)
+        cax_200 = cax.ok and cax.status == 200
+        cax_len = len(cax.text or "")
+
         def probe(path: str):
             url = urljoin(base_url, "/" + path.lstrip("/"))
             resp = client.get(url, phase="endpoints", allow_redirects=False)
-            if resp.ok and resp.status not in (404, 0):
-                return {
-                    "url": url, "status": resp.status,
-                    "length": len(resp.text),
-                    "location": resp.headers.get("location", ""),
-                    "content_type": resp.headers.get("content-type", ""),
-                }
-            return None
+            if not (resp.ok and resp.status not in (404, 0)):
+                return None
+            if cax_200 and resp.status == 200 and \
+                    abs(len(resp.text or "") - cax_len) <= max(64, cax_len * 0.05):
+                return None
+            return {
+                "url": url, "status": resp.status,
+                "length": len(resp.text),
+                "location": resp.headers.get("location", ""),
+                "content_type": resp.headers.get("content-type", ""),
+            }
 
         with cf.ThreadPoolExecutor(max_workers=max(2, cfg.threads)) as ex:
             for res in ex.map(probe, words):
